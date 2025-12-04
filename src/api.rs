@@ -5,9 +5,6 @@ use std::time::Duration;
 
 use crate::errors::AnalysisError;
 
-#[cfg(feature = "tls")]
-use attohttpc_tls as attohttpc;
-
 const API_BASE: &str = "https://repography.com";
 
 pub struct Api {}

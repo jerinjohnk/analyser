@@ -141,6 +141,13 @@ impl Analyser for CliAnalyser {
 
 				let time = DateTime::parse_from_rfc2822(time_str)?;
 
+				use chrono::{Datelike};  // Add Datelike trait
+				// Skip if not from 2024
+      			if time.date_naive().year() != 2025 {
+        			commit = None;
+        			continue;
+      			}
+
 				let author_name = parts.next().unwrap_or("Unknown");
 
 				let words = match parts.next() {
