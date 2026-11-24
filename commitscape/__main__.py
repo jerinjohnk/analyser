@@ -12,7 +12,9 @@ import re
 import sys
 from datetime import date
 
-from .analyse import analyse, date_bounds, retain_range
+from .analyse import analyse, date_bounds, default_range, retain_range
+from .filegroups import PRESETS, load_profile
+from .identities import load_aliases
 from .render import RENDERERS, Data, render_all
 
 
@@ -45,8 +47,13 @@ def main():
     ap = argparse.ArgumentParser(prog="commitscape", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-t", "--target", help="path to the local Git repository")
-    ap.add_argument("--from", dest="start", type=date.fromisoformat, help="first day to include (YYYY-MM-DD)")
-    ap.add_argument("--to", dest="end", type=date.fromisoformat, help="last day to include (YYYY-MM-DD)")
+    ap.add_argument("--from", dest="start", type=date.fromisoformat,
+                    help="first day (YYYY-MM-DD); default: 1 Jan this year from July on, else 1 Jan last year")
+    ap.add_argument("--to", dest="end", type=date.fromisoformat,
+                    help="last day (YYYY-MM-DD); default: today from July on, else 31 Dec last year")
+    ap.add_argument("--aliases", help='JSON file merging author identities (see README)')
+    ap.add_argument("--file-groups", help=f"file-groups JSON file or preset ({', '.join(PRESETS)}); "
+                                          "default: detected from the files")
     ap.add_argument("--title", help="project title shown on the visualizations")
     ap.add_argument("-o", "--out", help="output directory (default ./commitscape-output/<title>)")
     ap.add_argument("-y", "--yes", action="store_true", help="accept defaults for anything not given")
@@ -54,6 +61,14 @@ def main():
     ap.add_argument("--designs", help=f"comma-separated, default all: {','.join(RENDERERS)}")
     ap.add_argument("--include-bots", action="store_true", help="keep dependabot/CI bot commits")
     a = ap.parse_args()
+    try:
+        aliases, exclude = load_aliases(a.aliases) if a.aliases else ({}, set())
+    except (OSError, ValueError) as e:
+        sys.exit(f"Error: couldn't read aliases file {a.aliases}: {e}")
+    try:
+        profile = load_profile(a.file_groups) if a.file_groups else None
+    except (OSError, ValueError) as e:
+        sys.exit(f"Error: couldn't read file groups {a.file_groups}: {e}")
 
     target = os.path.expanduser(a.target or ask("Path to the local Git repository", ".", a.yes))
     if not os.path.isdir(target):
@@ -70,13 +85,15 @@ def main():
     print(f"\tFound {len(data['commits'])} commits from {bounds[0]} to {bounds[1]}.")
 
     print("[2/4]\tChoose what to visualize")
-    start = a.start or ask_date("Start date (YYYY-MM-DD)", bounds[0], a.yes)
-    end = a.end or ask_date("End date (YYYY-MM-DD)", bounds[1], a.yes)
+    default_start, default_end = default_range()
+    start = a.start or ask_date("Start date (YYYY-MM-DD)", default_start, a.yes)
+    end = a.end or ask_date("End date (YYYY-MM-DD)", default_end, a.yes)
     if start > end:
         sys.exit(f"Error: the start date {start} is after the end date {end}")
     retain_range(data, start, end)
     if not data["commits"]:
-        sys.exit(f"Error: no commits found between {start} and {end}")
+        sys.exit(f"Error: no commits found between {start} and {end} (this repository has commits "
+                 f"from {bounds[0]} to {bounds[1]}; use --from/--to)")
     data["meta"]["title"] = a.title or ask("Project title for the visualizations", os.path.basename(root), a.yes)
 
     out = os.path.abspath(a.out or os.path.join("commitscape-output", slugify(data["meta"]["title"])))
@@ -91,7 +108,7 @@ def main():
         return
     print("[4/4]\tRendering SVGs...")
     designs = [n.strip() for n in a.designs.split(",") if n.strip()] if a.designs else None
-    render_all(Data(data, None, a.include_bots), out, designs)
+    render_all(Data(data, None, a.include_bots, aliases, exclude, profile), out, designs)
     print(f"\nDone. Open {os.path.join(out, 'index.html')} to see them all.")
 
 

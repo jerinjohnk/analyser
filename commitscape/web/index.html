@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commitscape</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #fff; --ink: #18202a; --muted: #5d6b7a; --line: #dde2e8;
+  --accent: #0e6e8c; --accent-ink: #fff; --soft: #e8f3f6; --warn: #9a3412; --warn-soft: #fff1e6;
+  --ok: #166534; --chip: #eef1f4; --focus: #0e6e8c55;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1419; --card: #151f27; --ink: #e6edf2; --muted: #93a3b1; --line: #26333e;
+    --accent: #4fb3cf; --accent-ink: #062029; --soft: #10303a; --warn: #fdba74; --warn-soft: #3a2414;
+    --ok: #86efac; --chip: #1e2a34; --focus: #4fb3cf55;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 8px; }
+header h1 { margin: 0; font-size: 24px; letter-spacing: -0.3px; }
+header p { margin: 4px 0 0; color: var(--muted); }
+main { max-width: 1100px; margin: 0 auto; padding: 8px 16px 64px; display: grid; gap: 16px; }
+
+/* Collapsible steps and panels */
+details.step { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 0 20px; }
+details.step > summary { list-style: none; cursor: pointer; padding: 16px 0; display: flex; gap: 10px; align-items: center; font-size: 16px; font-weight: 650; }
+details.step[open] > summary { padding-bottom: 4px; }
+details.step > .body { padding-bottom: 18px; }
+details > summary::-webkit-details-marker { display: none; }
+summary .chev { margin-left: auto; color: var(--muted); transition: transform .15s; font-size: 12px; }
+details[open] > summary .chev { transform: rotate(90deg); }
+summary .meta { font-weight: 400; font-size: 13px; color: var(--muted); }
+summary .n { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+  display: inline-grid; place-items: center; font-size: 13px; flex: none; }
+details.sub { border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; margin-top: 12px; }
+details.sub > summary { list-style: none; cursor: pointer; padding: 10px 0; display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 13.5px; }
+details.sub > .body { padding-bottom: 12px; }
+
+.hint { margin: 0 0 14px; color: var(--muted); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input[type=text], input[type=date], input[type=search], select {
+  font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+input:focus, button:focus-visible, select:focus, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.small { padding: 3px 9px; font-size: 12.5px; }
+button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+button:disabled { opacity: .5; cursor: default; }
+.grow { flex: 1 1 260px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border-radius: 999px; padding: 5px 12px; background: var(--chip); border: 1px solid transparent; }
+.chip[aria-pressed=true] { background: var(--soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.muted { color: var(--muted); }
+.status { margin-top: 10px; min-height: 1.4em; }
+.error { color: var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 8px 12px; }
+.hidden { display: none !important; }
+.stat { font-variant-numeric: tabular-nums; }
+code { background: var(--chip); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Folder browser */
+.panel { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.panel .crumb { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.dirs { max-height: 320px; overflow: auto; margin-top: 8px; display: grid; }
+.dirs button { text-align: left; border: none; border-radius: 6px; padding: 6px 8px; display: flex; justify-content: space-between; gap: 8px; }
+.dirs button:hover { background: var(--soft); }
+
+/* Suggestions, people and groups */
+.sg { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.sg:first-child { border-top: none; }
+.sg .who { min-width: 0; }
+.sg .why { font-size: 12px; color: var(--muted); }
+.toolbar { position: sticky; top: 0; z-index: 2; background: var(--card); padding: 8px 0 10px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.cards { display: grid; gap: 8px; max-height: 560px; overflow: auto; padding-right: 4px; }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.card.merged { border-color: var(--accent); background: linear-gradient(var(--soft), var(--soft)) top/100% 40px no-repeat; }
+.card.out { opacity: .55; }
+.phead { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.phead input[type=text] { flex: 1 1 200px; font-weight: 600; }
+.member { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 4px 10px; align-items: center; padding: 6px 0 2px; }
+.member .nm { overflow-wrap: anywhere; }
+.member .em { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; background: var(--chip); color: var(--muted); margin-left: 6px; }
+.badge.bot { background: var(--warn-soft); color: var(--warn); }
+label.inc { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.count { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+
+/* File groups */
+.rule { display: grid; grid-template-columns: auto minmax(120px, 1fr) minmax(160px, 2fr) auto auto auto; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.rule:first-child { border-top: none; }
+.rule .move { display: flex; flex-direction: column; }
+.rule .move button { padding: 0 6px; font-size: 10px; line-height: 1.4; }
+.rule.out input[type=text] { opacity: .55; }
+.preview { margin: 4px 0 6px; }
+.bar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; }
+.bar span { display: block; height: 100%; }
+.legend { display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+.designs { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 14px; }
+.designs label { display: inline-flex; gap: 6px; align-items: center; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 16px; }
+.gallery figure { margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #000; }
+.gallery img { display: block; width: 100%; aspect-ratio: 1 / 1.41; object-fit: contain; background: #0b141b; }
+.gallery figcaption { background: var(--card); padding: 8px 10px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.gallery figcaption a { text-decoration: none; font-size: 13px; }
+@media (max-width: 640px) {
+  .member { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .member .count { grid-column: 2; }
+  .rule { grid-template-columns: auto 1fr auto; }
+  .rule .pats { grid-column: 2 / -1; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Commitscape</h1>
+  <p>Poster-style visualizations of a Git repository's history. Runs entirely on this computer: nothing is uploaded.</p>
+</header>
+
+<main>
+  <details class="step" id="s-repo" open>
+    <summary><span class="n">1</span>Repository <span class="meta" id="repo-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+    <div class="body">
+      <p class="hint">Choose your project folder with <b>Browse…</b> or type its path.</p>
+      <form class="row" id="repo-form">
+        <input type="text" id="repo-path" class="grow" placeholder="~/code/my-project" autocomplete="off" spellcheck="false"
+          aria-label="Path to the project folder">
+        <button type="button" id="browse-btn">Browse…</button>
+        <button class="primary" type="submit" id="load-btn">Load</button>
+      </form>
+      <div class="panel hidden" id="browser">
+        <div class="row">
+          <button type="button" class="small" id="dir-up">↑ Up</button>
+          <button type="button" class="small" id="dir-home">Home</button>
+          <span class="crumb grow" id="dir-path"></span>
+          <button type="button" class="small primary" id="dir-use">Use this folder</button>
+          <button type="button" class="small link" id="dir-close">Close</button>
+        </div>
+        <div class="dirs" id="dirs"></div>
+      </div>
+      <div class="status" id="repo-status" role="status"></div>
+    </div>
+  </details>
+
+  <details class="step hidden" id="s-range" open>
+    <summary><span class="n">2</span>Date range <span class="meta" id="range-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+    <div class="body">
+      <p class="hint">Default: this year so far once it's past 1 July, otherwise all of last year. Pick a preset or set your own dates.</p>
+      <div class="chips" id="presets" role="group" aria-label="Date range presets"></div>
+      <div class="row" style="margin-top:12px">
+        <label>From <input type="date" id="from"></label>
+        <label>To <input type="date" id="to"></label>
+        <span class="muted stat" id="range-count"></span>
+      </div>
+    </div>
+  </details>
+
+  <details class="step hidden" id="s-authors" open>
+    <summary><span class="n">3</span>Authors <span class="meta" id="authors-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+    <div class="body">
+      <p class="hint">Merge people who committed under several names and choose the name shown in the designs.
+        Select authors and press <b>Merge</b>, or edit a person's name directly. Unticked authors are left out.</p>
+
+      <details class="sub hidden" id="suggest" open>
+        <summary>Possible duplicates <span class="meta" id="suggest-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+        <div class="body" id="suggest-list"></div>
+      </details>
+
+      <details class="sub" id="authors-list" open>
+        <summary>All authors <span class="meta" id="people-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+        <div class="body">
+          <div class="toolbar">
+            <div class="row">
+              <input type="search" id="search" class="grow" placeholder="Search names or emails" aria-label="Search authors">
+              <label class="inc"><input type="checkbox" id="only-active" checked> Only authors with commits in range</label>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <span class="muted" id="sel-count">Select authors to merge them.</span>
+              <input type="text" id="merge-name" placeholder="Final name" aria-label="Final name for selected authors" disabled>
+              <button id="merge-btn" disabled>Merge</button>
+              <button class="link" id="clear-sel" disabled>Clear selection</button>
+              <span style="flex:1"></span>
+              <button class="small" id="export-btn" title="Download the mapping to share with teammates">Export mapping</button>
+              <button class="small" type="button" id="import-btn">Import mapping</button>
+              <input type="file" id="import-file" accept=".json,application/json" class="hidden">
+              <button class="small" id="reset-btn">Reset</button>
+            </div>
+          </div>
+          <div class="cards" id="people"></div>
+          <p class="muted stat" id="people-summary" style="margin:10px 0 0"></p>
+        </div>
+      </details>
+    </div>
+  </details>
+
+  <details class="step hidden" id="s-files" open>
+    <summary><span class="n">4</span>File groups <span class="meta" id="files-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+    <div class="body">
+      <p class="hint">How files are grouped in the designs' "share of lines changed". <b>Path rules</b> are checked first,
+        top to bottom; every other file is grouped by <b>language</b>. Unticked groups are left out of every design
+        (lines, bubbles, file counts), which is useful for lockfiles and generated code.</p>
+
+      <div class="preview" id="fg-preview" aria-live="polite"></div>
+
+      <div class="row" style="margin-top:10px">
+        <label>Preset <select id="preset-select" aria-label="File-group preset"></select></label>
+        <button class="small" id="preset-apply">Apply</button>
+        <span class="muted" id="preset-note"></span>
+        <span style="flex:1"></span>
+        <input type="text" id="preset-name" placeholder="Name for a new preset" aria-label="Preset name" style="width:190px">
+        <button class="small" id="preset-save">Save as preset</button>
+        <button class="small" id="fg-export">Export</button>
+        <button class="small" id="fg-import">Import</button>
+        <input type="file" id="fg-import-file" accept=".json,application/json" class="hidden">
+      </div>
+
+      <details class="sub" id="rules-panel" open>
+        <summary>Path rules <span class="meta" id="rules-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+        <div class="body">
+          <p class="muted" style="margin:0 0 8px;font-size:12.5px">Comma-separated globs: <code>*.test.*</code> matches the file name anywhere,
+            <code>android/**</code> a folder from the repository root, <code>**/__tests__/**</code> a folder at any depth, <code>*.{ts,tsx}</code> either extension.</p>
+          <div id="rules"></div>
+          <button class="small" id="rule-add" style="margin-top:8px">+ Add rule</button>
+        </div>
+      </details>
+
+      <details class="sub" id="langs-panel" open>
+        <summary>Languages <span class="meta" id="langs-meta"></span><span class="chev" aria-hidden="true">▶</span></summary>
+        <div class="body">
+          <div class="toolbar">
+            <div class="row">
+              <span class="muted" id="lsel-count">Select languages to merge them into one group.</span>
+              <input type="text" id="lmerge-name" placeholder="Group name" aria-label="Group name for selected languages" disabled>
+              <button id="lmerge-btn" disabled>Merge</button>
+              <button class="link" id="lclear-sel" disabled>Clear selection</button>
+            </div>
+          </div>
+          <div class="cards" id="langs"></div>
+        </div>
+      </details>
+    </div>
+  </details>
+
+  <details class="step hidden" id="s-generate" open>
+    <summary><span class="n">5</span>Generate<span class="chev" aria-hidden="true">▶</span></summary>
+    <div class="body">
+      <div class="row">
+        <label class="grow">Title shown on the designs<br><input type="text" id="title" style="width:100%"></label>
+      </div>
+      <div class="designs" id="designs"></div>
+      <button class="primary" id="gen-btn">Generate visualizations</button>
+      <div class="status" id="gen-status" role="status"></div>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </details>
+</main>
+
+<script>
+"use strict";
+const TOKEN = "__COMMITSCAPE_TOKEN__";
+const DESIGN_LABELS = {
+  "week-circles": "Working hours", "user-bubbles": "Committers", "trunk": "Time and influence",
+  "cross": "Directories × authors", "core": "Files changed together",
+};
+// Same validated slots as the posters (commitscape/render.py).
+const GROUP_COLORS = ["#3987E5", "#D95926", "#199E70", "#C98500"];
+const OTHER_COLOR = "#7D8A96";
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  repo: null,          // response of /api/load
+  alias: {},           // original author name -> final name
+  exclude: new Set(),  // original author names left out
+  selected: new Set(), // author names selected for merging
+  dismissed: new Set(),
+  preset: "default",   // date preset
+  fg: null,            // file-groups profile {name, rules, languages, exclude}
+  fgStats: null,       // response of /api/files
+  lselected: new Set(),
+};
+
+// ------------------------------------------------------------------ helpers
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k in node && typeof v !== "string") node[k] = v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat(Infinity)) if (c != null && c !== false) node.append(c instanceof Node ? c : String(c));
+  return node;
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Commitscape-Token": TOKEN },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({ error: `Unexpected response (${res.status})` }));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function setStatus(id, content, isError) {
+  const box = $(id);
+  box.replaceChildren();
+  box.classList.toggle("error", !!isError);
+  if (content) box.append(content);
+}
+
+function download(name, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 2) + "\n"], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function readJsonFile(input) {
+  return new Promise((resolve, reject) => {
+    const file = input.files[0];
+    input.value = "";
+    if (!file) return resolve(null);
+    file.text().then((t) => resolve({ name: file.name, data: JSON.parse(t) })).catch(reject);
+  });
+}
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+const iso = (d) => d.toISOString().slice(0, 10);
+const fmt = (n) => n.toLocaleString();
+const fmtLines = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e5 ? `${Math.round(n / 1e3)}k` : fmt(n);
+const finalName = (name) => state.alias[name] || name;
+
+function lowerBound(arr, v) { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; arr[m] < v ? lo = m + 1 : hi = m; } return lo; }
+function upperBound(arr, v) { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; arr[m] <= v ? lo = m + 1 : hi = m; } return lo; }
+function inRange(author) {
+  const from = $("from").value, to = $("to").value;
+  if (!from || !to || from > to) return 0;
+  return upperBound(author.days, to) - lowerBound(author.days, from);
+}
+
+/** Prefer a full "First Last" name, then the most commits. */
+function preferredName(authors) {
+  return [...authors].sort((a, b) =>
+    (/\s/.test(b.name.trim()) - /\s/.test(a.name.trim())) || (b.days.length - a.days.length))[0].name;
+}
+
+// ------------------------------------------------------------------ 1. repository
+
+$("repo-form").addEventListener("submit", (e) => { e.preventDefault(); loadRepo(); });
+
+async function loadRepo() {
+  $("browser").classList.add("hidden");
+  const btn = $("load-btn");
+  btn.disabled = true;
+  setStatus("repo-status", el("span", {}, el("span", { class: "spinner" }), "Reading the Git history…"));
+  try {
+    const repo = await api("/api/load", { path: $("repo-path").value });
+    state.repo = repo;
+    state.selected.clear();
+    state.lselected.clear();
+    state.dismissed.clear();
+    if (repo.saved) {
+      state.alias = { ...repo.saved.aliases };
+      state.exclude = new Set(repo.saved.exclude);
+    } else {
+      state.alias = {};
+      state.exclude = new Set(repo.authors.filter((a) => a.bot).map((a) => a.name));
+    }
+    setProfile(repo.fileGroups);
+    buildPresetSelect(repo.fileGroupsSaved ? "saved" : repo.detectedPreset);
+    describeActiveGroups();
+    $("title").value = repo.name;
+    try { localStorage.setItem("commitscape:path", $("repo-path").value); } catch (_) {}
+    const total = repo.authors.reduce((s, a) => s + a.days.length, 0);
+    setStatus("repo-status", el("span", {},
+      el("b", {}, repo.root), ` · ${fmt(total)} commits by ${fmt(repo.authors.length)} authors, `,
+      `${repo.bounds[0]} to ${repo.bounds[1]}`,
+      repo.saved ? el("div", { class: "muted" }, "Loaded your saved author mapping for this repository.") : null));
+    $("repo-meta").textContent = repo.name;
+    buildPresets();
+    buildDesigns();
+    for (const id of ["s-range", "s-authors", "s-files", "s-generate"]) $(id).classList.remove("hidden");
+    applyPreset("default");
+    $("gallery").replaceChildren();
+    setStatus("gen-status", null);
+  } catch (err) {
+    setStatus("repo-status", err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function useFolder(path) {
+  $("repo-path").value = path;
+  loadRepo();
+}
+
+// Browse…: the system folder picker (Finder on macOS), opened by the local server.
+$("browse-btn").addEventListener("click", async () => {
+  const btn = $("browse-btn");
+  btn.disabled = true;
+  setStatus("repo-status", el("span", {}, el("span", { class: "spinner" }), "Waiting for you to choose a folder in the dialog…"));
+  try {
+    const res = await api("/api/pick-folder", { start: $("repo-path").value || "~" });
+    if (res.path) return useFolder(res.path);
+    setStatus("repo-status", null);
+    if (res.unsupported) openBrowser($("repo-path").value || "~", `No system folder picker here (${res.reason}); pick a folder below.`);
+  } catch (err) {
+    openBrowser($("repo-path").value || "~", err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// In-page folder browser (fallback when there's no system picker).
+let browsing = null;
+async function openBrowser(path, note) {
+  try {
+    const res = await api("/api/list-dirs", { path });
+    browsing = res;
+    $("browser").classList.remove("hidden");
+    $("dir-path").textContent = res.path + (res.git ? "  (Git repository)" : "");
+    $("dir-up").disabled = !res.parent;
+    $("dirs").replaceChildren(...res.entries.map((d) =>
+      el("button", { type: "button", onclick: () => openBrowser(d.path), title: d.path },
+        el("span", {}, "📁 ", d.name), d.git ? el("span", { class: "badge" }, "Git") : null)));
+    if (!res.entries.length) $("dirs").append(el("p", { class: "muted" }, "No sub-folders."));
+    setStatus("repo-status", note || null, !!note);
+  } catch (err) {
+    setStatus("repo-status", err.message, true);
+  }
+}
+$("dir-up").addEventListener("click", () => browsing && browsing.parent && openBrowser(browsing.parent));
+$("dir-home").addEventListener("click", () => openBrowser("~"));
+$("dir-use").addEventListener("click", () => browsing && useFolder(browsing.path));
+$("dir-close").addEventListener("click", () => $("browser").classList.add("hidden"));
+
+// ------------------------------------------------------------------ 2. date range
+
+function presets() {
+  const r = state.repo, today = r.today, year = Number(today.slice(0, 4));
+  const yearAgo = new Date(today + "T00:00:00Z"); yearAgo.setUTCDate(yearAgo.getUTCDate() - 364);
+  const isThisYear = r.defaultRange[0].startsWith(String(year));
+  return [
+    { id: "default", label: `Default (${isThisYear ? "this year so far" : `all of ${year - 1}`})`, range: r.defaultRange },
+    { id: "ytd", label: "This year so far", range: [`${year}-01-01`, today] },
+    { id: "last-year", label: `Last year (${year - 1})`, range: [`${year - 1}-01-01`, `${year - 1}-12-31`] },
+    { id: "12m", label: "Last 12 months", range: [iso(yearAgo), today] },
+    { id: "all", label: "All time", range: r.bounds },
+  ];
+}
+
+function buildPresets() {
+  $("presets").replaceChildren(...presets().map((p) =>
+    el("button", { type: "button", class: "chip", "data-id": p.id, onclick: () => applyPreset(p.id) }, p.label)),
+    el("button", { type: "button", class: "chip", "data-id": "custom", onclick: () => { markPreset("custom"); $("from").focus(); } }, "Custom"));
+}
+
+function markPreset(id) {
+  state.preset = id;
+  for (const b of $("presets").children) b.setAttribute("aria-pressed", String(b.dataset.id === id));
+}
+
+function applyPreset(id) {
+  const p = presets().find((x) => x.id === id);
+  $("from").value = p.range[0];
+  $("to").value = p.range[1];
+  markPreset(id);
+  onRangeChange();
+}
+
+for (const id of ["from", "to"]) {
+  $(id).addEventListener("change", () => { markPreset("custom"); onRangeChange(); });
+}
+
+function onRangeChange() {
+  const from = $("from").value, to = $("to").value;
+  $("range-meta").textContent = from && to ? `${from} → ${to}` : "";
+  if (!from || !to) { $("range-count").textContent = ""; return; }
+  if (from > to) { $("range-count").textContent = "The start date is after the end date."; renderPeople(); return; }
+  const active = state.repo.authors.filter((a) => inRange(a) > 0);
+  const commits = active.reduce((s, a) => s + inRange(a), 0);
+  $("range-count").textContent = commits
+    ? `${fmt(commits)} commits by ${fmt(active.length)} authors in this range`
+    : `No commits in this range (history runs ${state.repo.bounds[0]} to ${state.repo.bounds[1]})`;
+  renderPeople();
+  refreshFiles();
+}
+
+// ------------------------------------------------------------------ 3. authors
+
+/** People = groups of original authors sharing a final name. */
+function people() {
+  const groups = new Map();
+  for (const a of state.repo.authors) {
+    const key = finalName(a.name);
+    if (!groups.has(key)) groups.set(key, { name: key, members: [] });
+    groups.get(key).members.push(a);
+  }
+  for (const g of groups.values()) {
+    g.members.sort((x, y) => inRange(y) - inRange(x) || y.days.length - x.days.length);
+    g.count = g.members.filter((m) => !state.exclude.has(m.name)).reduce((s, m) => s + inRange(m), 0);
+    g.any = g.members.reduce((s, m) => s + inRange(m), 0);
+    g.out = g.members.every((m) => state.exclude.has(m.name));
+  }
+  // Excluded people go last; otherwise busiest first.
+  return [...groups.values()].sort((a, b) => a.out - b.out || b.count - a.count || b.any - a.any || a.name.localeCompare(b.name));
+}
+
+/** Merges every author currently shown under any of `names`' people into `target`. */
+function mergeInto(names, target) {
+  target = target.trim();
+  if (!target) return;
+  const finals = new Set(names.map(finalName));
+  for (const a of state.repo.authors) {
+    if (finals.has(finalName(a.name))) {
+      if (a.name === target) delete state.alias[a.name]; else state.alias[a.name] = target;
+    }
+  }
+  state.selected.clear();
+  renderPeople();
+}
+
+function renamePerson(oldFinal, newFinal) {
+  newFinal = newFinal.trim();
+  if (!newFinal || newFinal === oldFinal) return renderPeople();
+  const members = state.repo.authors.filter((a) => finalName(a.name) === oldFinal).map((a) => a.name);
+  mergeInto(members, newFinal);
+}
+
+function setAuthorIncluded(name, included) {
+  included ? state.exclude.delete(name) : state.exclude.add(name);
+  renderPeople();
+  refreshFiles();
+}
+
+function renderPeople() {
+  if (!state.repo) return;
+  const q = $("search").value.trim().toLowerCase();
+  const onlyActive = $("only-active").checked;
+  const all = people();
+  const list = all.filter((g) =>
+    (!onlyActive || g.any > 0) &&
+    (!q || g.name.toLowerCase().includes(q) ||
+      g.members.some((m) => m.name.toLowerCase().includes(q) || m.emails.some((e) => e.toLowerCase().includes(q)))));
+
+  $("people").replaceChildren(...list.map((g) => {
+    const merged = g.members.length > 1;
+    const nameInput = el("input", { type: "text", value: g.name, "aria-label": `Name shown for ${g.name}`,
+      title: "Name shown in the designs. Renaming here renames everyone in this group.",
+      onchange: (e) => renamePerson(g.name, e.target.value),
+      onkeydown: (e) => { if (e.key === "Enter") e.target.blur(); } });
+    return el("div", { class: `card${merged ? " merged" : ""}${g.out ? " out" : ""}` },
+      el("div", { class: "phead" },
+        nameInput,
+        el("span", { class: "count" }, g.out ? `excluded · ${fmt(g.any)} commits in range` : `${fmt(g.count)} commits in range`),
+        merged ? el("span", { class: "badge" }, `${g.members.length} identities`) : null),
+      g.members.map((m) => el("div", { class: "member" },
+        el("input", { type: "checkbox", checked: state.selected.has(m.name), "aria-label": `Select ${m.name}`,
+          onchange: (e) => { e.target.checked ? state.selected.add(m.name) : state.selected.delete(m.name); updateSelection(); } }),
+        el("span", { class: "nm" }, m.name, m.bot ? el("span", { class: "badge bot" }, "bot") : null,
+          el("span", { class: "em" }, m.emails.join(", ") || "no email")),
+        el("span", { class: "count" }, `${fmt(inRange(m))} in range · ${fmt(m.days.length)} total`),
+        el("label", { class: "inc" }, el("input", { type: "checkbox", checked: !state.exclude.has(m.name),
+          onchange: (e) => setAuthorIncluded(m.name, e.target.checked) }), "Include"),
+        merged ? el("button", { class: "small link", title: "Show this identity separately again",
+          onclick: () => { delete state.alias[m.name]; renderPeople(); } }, "Split") : el("span"))));
+  }));
+  if (!list.length) $("people").append(el("p", { class: "muted" }, "No authors match."));
+
+  const active = all.filter((g) => g.any > 0);
+  const shown = active.filter((g) => g.count > 0);
+  const identities = active.reduce((s, g) => s + g.members.filter((m) => inRange(m) > 0).length, 0);
+  $("people-summary").textContent =
+    `${fmt(identities)} author identities in range → ${fmt(shown.length)} people in the designs` +
+    (active.length > shown.length ? ` (${fmt(active.length - shown.length)} excluded)` : "");
+  $("authors-meta").textContent = `${fmt(shown.length)} people`;
+  $("people-meta").textContent = `${fmt(identities)} identities → ${fmt(shown.length)} people`;
+  renderSuggestions();
+  updateSelection();
+}
+
+function renderSuggestions() {
+  const authors = state.repo.authors;
+  const open = state.repo.suggestions.filter((s, i) =>
+    !state.dismissed.has(i) && new Set(s.members.map((m) => finalName(authors[m].name))).size > 1);
+  $("suggest").classList.toggle("hidden", !open.length);
+  $("suggest-meta").textContent = `${open.length}`;
+  $("suggest-list").replaceChildren(...open.map((s) => {
+    const idx = state.repo.suggestions.indexOf(s);
+    const nameInput = el("input", { type: "text", value: s.name, "aria-label": "Final name" });
+    return el("div", { class: "sg" },
+      el("div", { class: "who" },
+        s.members.map((m, i) => [i ? " · " : "", el("b", {}, authors[m].name), ` (${fmt(authors[m].days.length)})`]),
+        el("div", { class: "why" }, s.reasons.join(", "))),
+      el("div", { class: "row" }, nameInput,
+        el("button", { class: "small", onclick: () => mergeInto(s.members.map((m) => authors[m].name), nameInput.value) }, "Merge"),
+        el("button", { class: "small link", onclick: () => { state.dismissed.add(idx); renderSuggestions(); } }, "Dismiss")));
+  }));
+}
+
+function updateSelection() {
+  const n = state.selected.size;
+  $("sel-count").textContent = n ? `${n} selected. Merge as` : "Select authors to merge them.";
+  $("merge-name").disabled = $("merge-btn").disabled = $("clear-sel").disabled = n === 0;
+  if (!n) $("merge-name").placeholder = "Final name";
+  if (n) $("merge-name").placeholder = finalName(preferredName(state.repo.authors.filter((a) => state.selected.has(a.name))));
+}
+
+$("merge-btn").addEventListener("click", () => {
+  mergeInto([...state.selected], $("merge-name").value || $("merge-name").placeholder);
+  $("merge-name").value = "";
+});
+$("merge-name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("merge-btn").click(); });
+$("clear-sel").addEventListener("click", () => { state.selected.clear(); renderPeople(); });
+$("search").addEventListener("input", renderPeople);
+$("only-active").addEventListener("change", renderPeople);
+$("reset-btn").addEventListener("click", () => {
+  state.alias = {};
+  state.exclude = new Set(state.repo.authors.filter((a) => a.bot).map((a) => a.name));
+  state.selected.clear();
+  state.dismissed.clear();
+  renderPeople();
+  refreshFiles();
+});
+
+function mappingJson() {
+  const aliases = {};
+  for (const [k, v] of Object.entries(state.alias)) if (v && v !== k) aliases[k] = v;
+  return { aliases, exclude: [...state.exclude].sort() };
+}
+
+$("export-btn").addEventListener("click", () => download(`${state.repo.name}-aliases.json`, mappingJson()));
+$("import-btn").addEventListener("click", () => $("import-file").click());
+$("import-file").addEventListener("change", async (e) => {
+  try {
+    const got = await readJsonFile(e.target);
+    if (!got) return;
+    const aliases = got.data.aliases || {}, exclude = got.data.exclude || [];
+    if (typeof aliases !== "object" || !Array.isArray(exclude)) throw new Error("expected {aliases: {...}, exclude: [...]}");
+    state.alias = {};
+    for (const [k, v] of Object.entries(aliases)) if (typeof v === "string" && v.trim()) state.alias[k] = v.trim();
+    state.exclude = new Set(exclude.map(String));
+    renderPeople();
+    refreshFiles();
+  } catch (err) {
+    showError(`Couldn't import the mapping: ${err.message}`);
+  }
+});
+
+function showError(message) {
+  setStatus("gen-status", message, true);
+  $("s-generate").open = true;
+  $("s-generate").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ------------------------------------------------------------------ 4. file groups
+
+function setProfile(p) {
+  state.fg = {
+    name: p.name || "Custom",
+    rules: (p.rules || []).map((r) => ({ name: r.name, patterns: [...r.patterns] })),
+    languages: { ...(p.languages || {}) },
+    exclude: new Set(p.exclude || []),
+  };
+  state.lselected.clear();
+}
+
+function profileJson() {
+  const languages = {};
+  for (const [k, v] of Object.entries(state.fg.languages)) if (v && v !== k) languages[k] = v;
+  return {
+    name: state.fg.name,
+    rules: state.fg.rules.filter((r) => r.name.trim() && r.patterns.length)
+      .map((r) => ({ name: r.name.trim(), patterns: r.patterns })),
+    languages,
+    exclude: [...state.fg.exclude].sort(),
+  };
+}
+
+function buildPresetSelect(selectedId) {
+  const sel = $("preset-select");
+  const opt = (p) => el("option", { value: p.id }, p.name + (p.id === state.repo.detectedPreset ? " (detected)" : ""));
+  const builtins = state.repo.presets.filter((p) => p.builtin), mine = state.repo.presets.filter((p) => !p.builtin);
+  sel.replaceChildren(
+    state.repo.fileGroupsSaved ? el("option", { value: "saved" }, "Saved for this repository") : null,
+    el("optgroup", { label: "Built-in" }, builtins.map(opt)),
+    mine.length ? el("optgroup", { label: "Saved presets" }, mine.map(opt)) : null);
+  if (selectedId) sel.value = selectedId;
+}
+
+/** A profile in a comparable form (rule order matters; language and exclude order don't). */
+function canonical(p) {
+  return JSON.stringify([p.rules.map((r) => [r.name, r.patterns]),
+    Object.entries(p.languages || {}).sort(), [...(p.exclude || [])].sort()]);
+}
+
+/** Explains which groups are in use, and offers the updated built-in preset when a repository's
+ *  saved groups were based on an older version of it. */
+function describeActiveGroups() {
+  const repo = state.repo, note = $("preset-note");
+  note.replaceChildren();
+  if (!repo.fileGroupsSaved) {
+    note.append(`Detected: ${repo.presets.find((p) => p.id === repo.detectedPreset).name}.`);
+    return;
+  }
+  note.append("Using the groups you saved for this repository.");
+  const saved = repo.fileGroups;
+  const base = repo.presets.find((p) => p.builtin && p.name === saved.name) ||
+    repo.presets.find((p) => p.id === repo.detectedPreset);
+  if (base && canonical(base.profile) !== canonical(saved)) {
+    note.append(" ", el("button", { class: "small", type: "button", onclick: () => applyPresetId(base.id) },
+      `Use updated “${base.name}” preset`));
+  }
+}
+
+function applyPresetId(id) {
+  if (id === "saved") {
+    setProfile(state.repo.fileGroups);
+    buildPresetSelect("saved");
+    describeActiveGroups();
+  } else {
+    const p = state.repo.presets.find((x) => x.id === id);
+    if (!p) return;
+    setProfile(p.profile);
+    buildPresetSelect(id);
+    $("preset-note").textContent = `Applied “${p.name}”. It's saved for this repository when you generate.`;
+  }
+  refreshFiles();
+}
+
+$("preset-apply").addEventListener("click", () => applyPresetId($("preset-select").value));
+
+$("preset-save").addEventListener("click", async () => {
+  const name = $("preset-name").value.trim();
+  if (!name) { $("preset-name").focus(); $("preset-note").textContent = "Type a name for the preset first."; return; }
+  try {
+    const res = await api("/api/presets/save", { name, profile: profileJson() });
+    state.repo.presets = res.presets;
+    state.fg.name = name;
+    buildPresetSelect(res.id);
+    $("preset-name").value = "";
+    $("preset-note").textContent = `Saved “${name}”. It's available for every repository.`;
+  } catch (err) {
+    $("preset-note").textContent = err.message;
+  }
+});
+
+$("fg-export").addEventListener("click", () =>
+  download(`${(state.fg.name || "file-groups").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.file-groups.json`, profileJson()));
+$("fg-import").addEventListener("click", () => $("fg-import-file").click());
+$("fg-import-file").addEventListener("change", async (e) => {
+  try {
+    const got = await readJsonFile(e.target);
+    if (!got) return;
+    const d = got.data;
+    if (typeof d !== "object" || d === null || (d.rules && !Array.isArray(d.rules)) ||
+        (d.languages && typeof d.languages !== "object") || (d.exclude && !Array.isArray(d.exclude))) {
+      throw new Error("expected {rules: [...], languages: {...}, exclude: [...]}");
+    }
+    setProfile({
+      name: String(d.name || got.name.replace(/\.json$/i, "")),
+      rules: (d.rules || []).map((r) => ({ name: String(r.name || ""), patterns:
+        (Array.isArray(r.patterns) ? r.patterns : String(r.patterns || "").split(",")).map((x) => String(x).trim()).filter(Boolean) })),
+      languages: d.languages || {}, exclude: d.exclude || [],
+    });
+    $("preset-note").textContent = `Imported “${state.fg.name}”.`;
+    refreshFiles();
+  } catch (err) {
+    $("preset-note").textContent = `Couldn't import: ${err.message}`;
+  }
+});
+
+const refreshFiles = debounce(async () => {
+  if (!state.repo || !state.fg) return;
+  const from = $("from").value, to = $("to").value;
+  if (!from || !to || from > to) return;
+  try {
+    state.fgStats = await api("/api/files", {
+      root: state.repo.root, from, to, fileGroups: profileJson(), excludeAuthors: [...state.exclude],
+    });
+    renderFiles();
+  } catch (err) {
+    $("fg-preview").replaceChildren(el("div", { class: "error" }, err.message));
+  }
+}, 200);
+
+function setGroupIncluded(name, included) {
+  included ? state.fg.exclude.delete(name) : state.fg.exclude.add(name);
+  refreshFiles();
+}
+
+function renderFiles() {
+  const stats = state.fgStats;
+  if (!stats) return;
+  // Preview: same top-4 + Other breakdown as the posters.
+  const kept = stats.groups.filter((g) => !g.excluded && g.lines > 0);
+  const total = kept.reduce((s, g) => s + g.lines, 0);
+  const top = kept.slice(0, 4).map((g, i) => ({ name: g.name, share: g.lines / total, color: GROUP_COLORS[i] }));
+  const rest = 1 - top.reduce((s, g) => s + g.share, 0);
+  if (rest > 0.005) top.push({ name: "Other", share: rest, color: OTHER_COLOR });
+  const left = stats.groups.filter((g) => g.excluded && g.lines > 0);
+  $("fg-preview").replaceChildren(total
+    ? el("div", {},
+        el("div", { class: "muted", style: "font-size:12.5px;margin-bottom:6px" }, "Share of lines changed, as on the posters"),
+        el("div", { class: "bar" }, top.map((g) => el("span", { style: `width:${(g.share * 100).toFixed(2)}%;background:${g.color}`, title: g.name }))),
+        el("div", { class: "legend" }, top.map((g) => el("span", {}, el("i", { style: `background:${g.color}` }),
+          `${g.name} ${g.share >= 0.01 ? Math.round(g.share * 100) + "%" : "<1%"}`))),
+        kept.length > 4 ? el("div", { class: "muted", style: "font-size:12.5px;margin-top:6px" },
+          "Other: " + kept.slice(4).map((g) => `${g.name} ${(g.lines / total * 100).toFixed(1)}%`).join(" · ")) : null,
+        left.length ? el("div", { class: "muted", style: "font-size:12.5px;margin-top:6px" },
+          "Left out: " + left.map((g) => `${g.name} (${fmtLines(g.lines)} lines, ${fmt(g.files)} files)`).join(" · ")) : null)
+    : el("div", { class: "muted" }, "No changed lines in this range."));
+  $("files-meta").textContent = `${kept.length} groups`;
+
+  // Path rules
+  const ruleStats = new Map(stats.rules.map((r) => [r.name, r]));
+  $("rules").replaceChildren(...state.fg.rules.map((r, i) => {
+    const st = ruleStats.get(r.name.trim()) || { lines: 0, files: 0 };
+    const out = state.fg.exclude.has(r.name.trim());
+    return el("div", { class: `rule${out ? " out" : ""}` },
+      el("span", { class: "move" },
+        el("button", { class: "small", title: "Move up", disabled: i === 0, onclick: () => moveRule(i, -1) }, "▲"),
+        el("button", { class: "small", title: "Move down", disabled: i === state.fg.rules.length - 1, onclick: () => moveRule(i, 1) }, "▼")),
+      el("input", { type: "text", value: r.name, "aria-label": "Group name", placeholder: "Group name",
+        onchange: (e) => { renameExcluded(r.name, e.target.value); r.name = e.target.value; refreshFiles(); } }),
+      el("input", { type: "text", class: "pats", value: r.patterns.join(", "), "aria-label": `Patterns for ${r.name}`,
+        placeholder: "e.g. **/__tests__/**, *.test.*", spellcheck: false,
+        onchange: (e) => { r.patterns = e.target.value.split(",").map((x) => x.trim()).filter(Boolean); refreshFiles(); } }),
+      el("span", { class: "count" }, `${fmtLines(st.lines)} lines · ${fmt(st.files)} files`),
+      el("label", { class: "inc" }, el("input", { type: "checkbox", checked: !out,
+        onchange: (e) => setGroupIncluded(r.name.trim(), e.target.checked) }), "Include"),
+      el("button", { class: "small link", onclick: () => { state.fg.rules.splice(i, 1); refreshFiles(); } }, "Delete"));
+  }));
+  if (!state.fg.rules.length) $("rules").append(el("p", { class: "muted", style: "margin:0" }, "No path rules: every file is grouped by language."));
+  $("rules-meta").textContent = `${state.fg.rules.length}`;
+
+  // Languages (files no rule matched), grouped by their merged name
+  const groups = new Map();
+  for (const l of stats.languages) {
+    const key = state.fg.languages[l.name] || l.name;
+    if (!groups.has(key)) groups.set(key, { name: key, members: [], lines: 0, files: 0 });
+    const g = groups.get(key);
+    g.members.push(l); g.lines += l.lines; g.files += l.files;
+  }
+  const list = [...groups.values()].sort((a, b) =>
+    state.fg.exclude.has(a.name) - state.fg.exclude.has(b.name) || b.lines - a.lines);
+  $("langs").replaceChildren(...list.map((g) => {
+    const merged = g.members.length > 1, out = state.fg.exclude.has(g.name);
+    return el("div", { class: `card${merged ? " merged" : ""}${out ? " out" : ""}` },
+      el("div", { class: "phead" },
+        el("input", { type: "text", value: g.name, "aria-label": `Group name for ${g.name}`,
+          title: "Name shown in the breakdown. Renaming here renames the whole group.",
+          onchange: (e) => renameLangGroup(g.name, e.target.value),
+          onkeydown: (e) => { if (e.key === "Enter") e.target.blur(); } }),
+        el("span", { class: "count" }, `${fmtLines(g.lines)} lines · ${fmt(g.files)} files`),
+        el("label", { class: "inc" }, el("input", { type: "checkbox", checked: !out,
+          onchange: (e) => setGroupIncluded(g.name, e.target.checked) }), "Include")),
+      g.members.map((l) => el("div", { class: "member" },
+        el("input", { type: "checkbox", checked: state.lselected.has(l.name), "aria-label": `Select ${l.name}`,
+          onchange: (e) => { e.target.checked ? state.lselected.add(l.name) : state.lselected.delete(l.name); updateLangSelection(); } }),
+        el("span", { class: "nm" }, l.name),
+        el("span", { class: "count" }, `${fmtLines(l.lines)} lines · ${fmt(l.files)} files`),
+        el("span"),
+        merged ? el("button", { class: "small link", title: "Show this language separately again",
+          onclick: () => { delete state.fg.languages[l.name]; refreshFiles(); } }, "Split") : el("span"))));
+  }));
+  if (!list.length) $("langs").append(el("p", { class: "muted" }, "Every changed file is matched by a path rule."));
+  $("langs-meta").textContent = `${stats.languages.length} languages → ${list.length} groups`;
+  updateLangSelection();
+}
+
+function moveRule(i, delta) {
+  const rules = state.fg.rules;
+  [rules[i], rules[i + delta]] = [rules[i + delta], rules[i]];
+  refreshFiles();
+}
+
+/** Keeps a group's "excluded" flag when it's renamed. */
+function renameExcluded(oldName, newName) {
+  if (state.fg.exclude.delete(oldName.trim())) state.fg.exclude.add(newName.trim());
+}
+
+function mergeLangs(langNames, target) {
+  target = target.trim();
+  if (!target) return;
+  const current = (l) => state.fg.languages[l] || l;
+  const finals = new Set(langNames.map(current));
+  for (const l of state.fgStats.languages.map((x) => x.name).concat(Object.keys(state.fg.languages))) {
+    if (finals.has(current(l))) {
+      if (l === target) delete state.fg.languages[l]; else state.fg.languages[l] = target;
+    }
+  }
+  for (const f of finals) renameExcluded(f, target);
+  state.lselected.clear();
+  refreshFiles();
+}
+
+function renameLangGroup(oldName, newName) {
+  newName = newName.trim();
+  if (!newName || newName === oldName) return renderFiles();
+  const members = state.fgStats.languages.filter((l) => (state.fg.languages[l.name] || l.name) === oldName).map((l) => l.name);
+  mergeLangs(members, newName);
+}
+
+function updateLangSelection() {
+  const n = state.lselected.size;
+  $("lsel-count").textContent = n ? `${n} selected. Merge as` : "Select languages to merge them into one group.";
+  $("lmerge-name").disabled = $("lmerge-btn").disabled = $("lclear-sel").disabled = n === 0;
+  if (!n) $("lmerge-name").placeholder = "Group name";
+  if (n) {
+    const byLines = state.fgStats.languages.filter((l) => state.lselected.has(l.name)).sort((a, b) => b.lines - a.lines);
+    $("lmerge-name").placeholder = byLines.length ? (state.fg.languages[byLines[0].name] || byLines[0].name) : "Group name";
+  }
+}
+
+$("lmerge-btn").addEventListener("click", () => {
+  mergeLangs([...state.lselected], $("lmerge-name").value || $("lmerge-name").placeholder);
+  $("lmerge-name").value = "";
+});
+$("lmerge-name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("lmerge-btn").click(); });
+$("lclear-sel").addEventListener("click", () => { state.lselected.clear(); renderFiles(); });
+$("rule-add").addEventListener("click", () => {
+  state.fg.rules.push({ name: "New group", patterns: [] });
+  renderFiles();
+  const inputs = $("rules").querySelectorAll(".rule input[type=text]");
+  if (inputs.length) { inputs[inputs.length - 2].select(); }
+});
+
+// ------------------------------------------------------------------ 5. generate
+
+function buildDesigns() {
+  $("designs").replaceChildren(...state.repo.designs.map((d) =>
+    el("label", {}, el("input", { type: "checkbox", value: d, checked: true }), DESIGN_LABELS[d] || d,
+      el("span", { class: "muted" }, ` (${d})`))));
+}
+
+$("gen-btn").addEventListener("click", async () => {
+  const designs = [...$("designs").querySelectorAll("input:checked")].map((i) => i.value);
+  if (!designs.length) return showError("Pick at least one design.");
+  const btn = $("gen-btn");
+  btn.disabled = true;
+  setStatus("gen-status", el("span", {}, el("span", { class: "spinner" }), "Rendering…"));
+  $("gallery").replaceChildren();
+  try {
+    const res = await api("/api/render", {
+      root: state.repo.root, from: $("from").value, to: $("to").value,
+      title: $("title").value, designs, ...mappingJson(), fileGroups: profileJson(),
+    });
+    const stamp = Date.now();
+    setStatus("gen-status", el("div", {},
+      el("div", {}, el("b", { style: "color:var(--ok)" }, "Done. "),
+        `${fmt(res.stats.commits)} commits by ${fmt(res.stats.people)} people. Saved to `, el("code", {}, res.outDir)),
+      el("div", { class: "muted" }, "Your author mapping and file groups are saved for this repository. Share them with teammates: ",
+        el("a", { href: res.aliasesFile, download: "aliases.json" }, "aliases.json"),
+        res.fileGroupsFile ? [" · ", el("a", { href: res.fileGroupsFile, download: "file-groups.json" }, "file-groups.json")] : null,
+        " (", el("code", {}, "--aliases"), " / ", el("code", {}, "--file-groups"), " in the CLI).")));
+    $("gallery").replaceChildren(...res.files.map((f) =>
+      el("figure", {},
+        el("a", { href: `${f.url}?v=${stamp}`, target: "_blank", rel: "noopener" },
+          el("img", { src: `${f.url}?v=${stamp}`, alt: `${DESIGN_LABELS[f.design] || f.design} visualization`, loading: "lazy" })),
+        el("figcaption", {}, el("span", {}, DESIGN_LABELS[f.design] || f.design),
+          el("span", {},
+            el("a", { href: `${f.url}?v=${stamp}`, target: "_blank", rel: "noopener" }, "Open"), " · ",
+            el("a", { href: f.url, download: `${f.design}.svg` }, "Download"))))));
+  } catch (err) {
+    setStatus("gen-status", err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Remember the last repository path in this browser.
+try { $("repo-path").value = localStorage.getItem("commitscape:path") || ""; } catch (_) {}
+</script>
+</body>
+</html>

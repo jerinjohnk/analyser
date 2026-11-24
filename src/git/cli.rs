@@ -108,7 +108,7 @@ impl Analyser for CliAnalyser {
 			"--numstat",
 			"--date=rfc2822",
 			"--use-mailmap",
-			"--pretty=format:#%H#%ad#%aN#%f",
+			"--pretty=format:#%H#%ad#%aE#%aN#%f",
 			"--no-renames",
 			"--no-expand-tabs",
 			"--no-merges",
@@ -147,15 +147,19 @@ impl Analyser for CliAnalyser {
 
 				let time = DateTime::parse_from_rfc2822(time_str)?;
 
-				let author_name = parts.next().unwrap_or("Unknown");
+				let author_email = parts.next().unwrap_or("");
 
-				let words = match parts.next() {
-					Some(words) => data.filter_stop_words(words.split('-')),
-					None => vec![],
+				// %f (the subject slug) never contains '#', so split it off from the right:
+				// that keeps author names containing '#' intact.
+				let rest = parts.next().unwrap_or("Unknown");
+				let (author_name, words) = match rest.rsplit_once('#') {
+					Some((name, words)) => (name, data.filter_stop_words(words.split('-'))),
+					None => (rest, vec![]),
 				};
 
 				let user_index = data.get_user_index(author_name);
 				data.users[user_index].contributions += 1;
+				data.users[user_index].add_email(author_email);
 
 				commit = Some(Commit {
 					id: id.to_string(),

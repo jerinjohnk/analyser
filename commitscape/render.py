@@ -21,17 +21,17 @@ import html
 import json
 import math
 import os
-import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+
+from .filegroups import PRESETS, Classifier, breakdown, detect_preset, load_profile
+from .identities import load_aliases, resolve_users
 
 POS, NEU, NEG = "#8DD3C7", "#EADEC4", "#BC6F6F"
 SANS = "Montserrat,Gotham,Proxima Nova,Helvetica,sans-serif"
 MONO = "Ubuntu Mono,Menlo,monospace"
 A_W, A_H = 1063.8297872340427, 1500  # 1:1.41 poster
-BOT_RE = re.compile(r"\[bot\]|^bot|bot$|\bbot\b|github actions|^renovate", re.I)
-NON_CODE = {"Markdown", "JSON", "JSON with Comments", "YAML", "TOML", "Text", "XML", "CSV", "TSV",
-            "reStructuredText", "INI", "SVG", "Ignore List", "Git Config", "EditorConfig", "Lockfile"}
+
 
 
 # --------------------------------------------------------------------------- data
@@ -50,22 +50,29 @@ def fmt_date(d):
 
 
 class Data:
-    def __init__(self, a, name=None, include_bots=False):
+    def __init__(self, a, name=None, include_bots=False, aliases=None, exclude=None, file_groups=None):
+        """`aliases` maps original author names to final names (merging identities);
+        `exclude` lists original names to leave out (see commitscape/identities.py).
+        `file_groups` is a file-groups profile (see commitscape/filegroups.py); files in its excluded
+        groups are left out of every design. Without one, a preset is picked from the file list."""
         self.raw = a
         self.files = a["files"]
-        self.users = a["users"]
-        self.revision = a.get("revision", "")[:8]
+        self.users, user_map, self.bots = resolve_users(a["users"], aliases, exclude, include_bots)
         meta = a.get("meta") or {}
         self.name = name or meta.get("title") or meta.get("name") or "repository"
         self.commits = []
-        self.bots = {i for i, u in enumerate(self.users) if BOT_RE.search(u["name"])}
+        profile = file_groups or PRESETS[detect_preset(self.files)]
+        self.classifier = Classifier(profile)
+        self.raw_commits_kept = []  # analysis-shaped commits after exclusions, for group_shares
         for c in a["commits"]:
-            if not include_bots and c["user"] in self.bots:
+            if c["user"] not in user_map:  # excluded or a bot
                 continue
+            c = dict(c, files=[f for f in c["files"] if not self.classifier.excluded(self.files[f["File"]])])
+            self.raw_commits_kept.append(c)
             adds = sum(f["Additions"] for f in c["files"])
             dels = sum(f["Deletions"] for f in c["files"])
             self.commits.append({
-                "t": datetime.fromisoformat(c["time"]), "user": c["user"], "files": c["files"],
+                "t": datetime.fromisoformat(c["time"]), "user": user_map[c["user"]], "files": c["files"],
                 "adds": adds, "dels": dels, "lines": adds + dels, "kind": kind(adds, dels),
             })
         self.commits.sort(key=lambda c: c["t"])
@@ -82,10 +89,10 @@ class Data:
         self.span = max((self.last - self.first).total_seconds(), 1)
         self.user_commits = Counter(c["user"] for c in self.commits)
         self.files_touched = len({f["File"] for c in self.commits for f in c["files"]})
-        langs = [l for l in a.get("languages") or [] if l["name"] not in NON_CODE]
-        lang_total = sum(l["bytes"] for l in langs) or 1
-        top = max(langs, key=lambda l: l["bytes"]) if langs else None
-        self.top_lang = (top["name"], top["bytes"] / lang_total) if top else None
+        self.lines_added = sum(c["adds"] for c in self.commits)
+        self.lines_removed = sum(c["dels"] for c in self.commits)
+        self.active_days = len({c["t"].date() for c in self.commits})
+        self.languages = group_shares(self)
 
     def tnorm(self, t):
         return (t - self.first).total_seconds() / self.span
@@ -96,6 +103,28 @@ class Data:
     @property
     def date_range(self):
         return f"{fmt_date(self.first)} - {fmt_date(self.last)}"
+
+
+def group_shares(d, top=4):
+    """Top file groups by lines changed within the range, as [(name, share)], the rest as "Other".
+    Excluded groups are already gone from the commits."""
+    groups, _, _ = breakdown(d.raw_commits_kept, d.files, d.classifier)
+    total = sum(g["lines"] for g in groups.values())
+    if not total:
+        return []
+    ranked = sorted(groups.items(), key=lambda kv: -kv[1]["lines"])
+    shares = [(name, g["lines"] / total) for name, g in ranked[:top] if g["lines"]]
+    rest = 1 - sum(sh for _, sh in shares)
+    if rest > 0.005:
+        shares.append(("Other", rest))
+    return shares
+
+
+def fmt_big(n):
+    """1,234 / 98,765 / 758k / 1.2M: exact below 100,000, abbreviated above."""
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    return f"{round(n / 1000)}k" if n >= 100_000 else f"{n:,}"
 
 
 def kind(adds, dels):
@@ -173,24 +202,63 @@ def title_svg(name, x, y, size, family, color="#fff"):
     return f'<text x="{x}" y="{y}" font-family="{family}" font-size="{size}" font-weight="bold" fill="{color}">{esc(name)}</text>'
 
 
+# Categorical slots validated for the dark poster surface (distinct for colour-blind readers too:
+# worst adjacent CVD ΔE 8.4, all >= 3:1 contrast). Groups beyond four fold into a neutral "Other".
+LANG_COLORS = ["#3987E5", "#D95926", "#199E70", "#C98500"]
+OTHER_COLOR = "#7D8A96"
+BAR_GAP = 2  # surface gap between stacked segments
+
+
+def poster_header(d):
+    """Title, range, key numbers and the language breakdown, laid out in two columns
+    (left: x 50-410, right: x 450-770) so nothing crosses the divider at x 430."""
+    out = [title_svg(d.name, 50, 70, 30, SANS),
+           f'<text x="50" y="101" font-size="11" font-weight="bold" fill="#fff">{esc(d.date_range)}</text>',
+           f'<text x="50" y="119" font-size="10" fill="#fff" fill-opacity="0.85">{len(d.commits):,} commits · '
+           f'{len(d.user_commits):,} contributors · {d.files_touched:,} files</text>',
+           f'<text x="50" y="135" font-size="10" fill="#fff" fill-opacity="0.85">'
+           f'<tspan fill="{POS}">+{fmt_big(d.lines_added)}</tspan> / <tspan fill="{NEG}">\u2212{fmt_big(d.lines_removed)}</tspan>'
+           f' lines · {d.active_days:,} active days</text>']
+    if not d.languages:
+        return "".join(out)
+    x0, width = 450, 320
+    out += ['<rect x="430" y="90" width="1" height="58" fill="#fff" fill-opacity="0.35"/>',
+            f'<text x="{x0}" y="101" font-size="9" fill="#fff" fill-opacity="0.7">Share of lines changed</text>',
+            f'<clipPath id="langbar"><rect x="{x0}" y="108" width="{width}" height="8" rx="4"/></clipPath>']
+    bar, legend, x = [], [], x0
+    lx, ly = x0, 133
+    for i, (name, share) in enumerate(d.languages):
+        color = OTHER_COLOR if name == "Other" else LANG_COLORS[i % len(LANG_COLORS)]
+        w = width * share
+        last = i == len(d.languages) - 1
+        seg = max(w - (0 if last else BAR_GAP), 1)
+        bar.append(f'<rect x="{x:.2f}" y="108" width="{seg:.2f}" height="8" fill="{color}">'
+                   f'<title>{esc(name)} {share * 100:.1f}%</title></rect>')
+        x += w
+        short = name if len(name) <= 18 else name[:17].rstrip() + "…"
+        label = f"{short} {share * 100:.0f}%" if share >= 0.01 else f"{short} <1%"
+        gap_after = 12
+        item_w = 14 + len(label) * 5.1 + gap_after  # swatch + text (~5.1px/char at 9.5px) + gap
+        # Wrap to a second row only if the item itself (without its trailing gap) would pass the
+        # right edge; the header legend at x=800 leaves 20px of slack after the bar.
+        if lx + item_w - gap_after > x0 + width + 20 and lx > x0:
+            lx, ly = x0, ly + 15
+        legend.append(f'<rect x="{lx}" y="{ly - 8}" width="9" height="9" rx="2" fill="{color}"/>'
+                      f'<text x="{lx + 14}" y="{ly}" font-size="9.5" fill="#fff"><title>{esc(name)}</title>{esc(label)}</text>')
+        lx += item_w
+    out.append(f'<g clip-path="url(#langbar)">{"".join(bar)}</g>')
+    out += legend
+    return "".join(out)
+
+
 def space_poster(d, body, legend):
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0,0,{A_W},{A_H}" font-family="{SANS}">',
            SPACE_DEFS,
            f'<rect fill="url(#background)" width="{A_W}" height="{A_H}"/>',
-           title_svg(d.name, 50, 70, 30, SANS),
-           f'<text x="50" y="102" font-size="10" fill="#fff">{esc(d.date_range)}</text>',
-           f'<text x="50" y="117" font-size="10" fill="#fff">Revision {esc(d.revision)}</text>',
-           f'<text x="50" y="135" font-size="10" fill="#fff" fill-opacity="0.7">'
-           f'{len(d.commits):,} commits · {len(d.user_commits):,} contributors · {d.files_touched:,} files</text>',
-           '<rect x="230" y="95" width="1" height="58" fill="#fff" fill-opacity="0.6"/>']
-    if d.top_lang:
-        lang, pct = d.top_lang
-        out += [f'<text x="250" y="105" font-size="10" fill="#fff">{esc(lang)}</text>',
-                f'<rect x="365" y="98" width="{max(99 * pct, 4):.1f}" height="10" rx="5" fill="url(#dataLinear)"/>',
-                f'<text x="470" y="106" font-size="10" fill="#fff">{pct * 100:.0f}%</text>']
-    out.append(f'<g transform="translate(800,45)">{legend}</g>')
-    out.append(body)
-    out.append("</svg>")
+           poster_header(d),
+           f'<g transform="translate(800,45)">{legend}</g>',
+           body,
+           "</svg>"]
     return "\n".join(out)
 
 
@@ -271,19 +339,19 @@ def beeswarm(items, cy, max_offset=46):
 
 
 def axis_ticks(d):
-    """Year ticks for long ranges, month ticks (Jan, Feb, ...) for ranges under ~2 years."""
+    """Year ticks for long ranges, month ticks (Jan, Feb, ...) for ranges under ~2 years.
+    Every boundary inside the range is labelled, including the first one when the range starts
+    exactly on it (e.g. a range from 1 Jan gets a "Jan" tick at its left edge)."""
     start = d.first.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if (d.last - d.first).days > 730:
-        return [(start.replace(year=y, month=1), str(y)) for y in range(d.first.year + 1, d.last.year + 1)]
-    ticks, y, m = [], start.year, start.month
-    while True:
-        m += 1
-        if m > 12:
-            y, m = y + 1, 1
-        t = start.replace(year=y, month=m)
-        if t > d.last:
-            return ticks
-        ticks.append((t, t.strftime("%b %Y") if m == 1 else t.strftime("%b")))
+        years = [start.replace(year=y, month=1) for y in range(d.first.year, d.last.year + 1)]
+        return [(t, str(t.year)) for t in years if d.first <= t <= d.last]
+    ticks, t = [], start
+    while t <= d.last:
+        if t >= d.first:
+            ticks.append((t, t.strftime("%b %Y") if t.month == 1 or not ticks else t.strftime("%b")))
+        t = t.replace(year=t.year + (t.month == 12), month=t.month % 12 + 1)
+    return ticks
 
 
 def render_user_bubbles(d):
@@ -292,24 +360,43 @@ def render_user_bubbles(d):
     others = set(d.user_commits) - set(top)
     if others:
         rows.append((f"{len(others)} others", others))
-    x0, x1, y0, step = 300, 980, 300, 100
+
+    # Horizontal: same 50px side margins as the header. The label column is as wide as the longest
+    # name (bold 12px ≈ 7px/char, capped), then a gap, then the time axis; bubbles can overhang the
+    # axis ends by their radius, so the axis is inset by the largest radius.
+    margin, rmax, gap = 50, 16, 24
+    label_w = min(max((len(label) for label, _ in rows), default=8) * 7 + 4, 220)
+    label_x = margin + label_w
+    x0, x1 = label_x + gap + rmax, A_W - margin - rmax
+
+    # Vertical: spread the rows over the space between the header and the bottom margin, centred,
+    # instead of a fixed pitch that leaves the bottom of the poster empty for small teams.
+    area_top, area_bottom, axis_h = 220, A_H - 70, 40
+    n = max(len(rows), 1)
+    step = min(130, (area_bottom - area_top - axis_h) / n)
+    block = n * step + axis_h
+    y_first = area_top + (area_bottom - area_top - block) / 2 + step / 2
+
     body = []
     for i, (label, members) in enumerate(rows):
-        ry = y0 + i * step
-        items = [{"x": x0 + (x1 - x0) * d.tnorm(c["t"]), "r": bubble_r(c["lines"], 0.22, 16), "kind": c["kind"],
+        ry = y_first + i * step
+        items = [{"x": x0 + (x1 - x0) * d.tnorm(c["t"]), "r": bubble_r(c["lines"], 0.22, rmax), "kind": c["kind"],
                   "title": f'{c["t"]:%d %b %Y} · +{c["adds"]} -{c["dels"]}'}
                  for c in d.commits if c["user"] in members]
-        beeswarm(items, ry)
-        n = sum(d.user_commits[u] for u in members)
-        body.append(f'<text x="258" y="{ry - 2}" font-size="12" font-weight="bold" fill="#fff" text-anchor="end">{esc(label)}</text>'
-                    f'<text x="258" y="{ry + 10}" font-size="9" fill="#fff" fill-opacity="0.6" text-anchor="end">{n:,} commits</text>')
+        beeswarm(items, ry, max_offset=step * 0.46)
+        count = sum(d.user_commits[u] for u in members)
+        short = label if len(label) <= 30 else label[:29].rstrip() + "…"
+        body.append(f'<text x="{label_x}" y="{ry - 2:.1f}" font-size="12" font-weight="bold" fill="#fff" text-anchor="end">'
+                    f'<title>{esc(label)}</title>{esc(short)}</text>'
+                    f'<text x="{label_x}" y="{ry + 10:.1f}" font-size="9" fill="#fff" fill-opacity="0.6" text-anchor="end">'
+                    f'{count:,} commits</text>')
         body += [circle_svg(c) for c in items]
-    # time axis
-    ay = y0 + len(rows) * step - 30
-    body.append(f'<rect x="{x0}" y="{ay}" width="{x1 - x0}" height="1" fill="#fff" fill-opacity="0.3"/>')
-    for t, label in axis_ticks(d):
+    # time axis, just below the last row
+    ay = y_first + (n - 1) * step + step / 2 + 10
+    body.append(f'<rect x="{x0 - rmax}" y="{ay:.1f}" width="{x1 - x0 + 2 * rmax}" height="1" fill="#fff" fill-opacity="0.3"/>')
+    for t, tick in axis_ticks(d):
         x = x0 + (x1 - x0) * d.tnorm(t)
-        body.append(f'<text x="{x:.1f}" y="{ay + 14}" font-size="9" fill="#fff" fill-opacity="0.6" text-anchor="middle">{label}</text>')
+        body.append(f'<text x="{x:.1f}" y="{ay + 14:.1f}" font-size="9" fill="#fff" fill-opacity="0.6" text-anchor="middle">{tick}</text>')
     return space_poster(d, "\n".join(body), bubble_legend(d))
 
 
@@ -350,15 +437,30 @@ def render_trunk(d, layers=7):
             k = min(int(d.tnorm(c["t"]) * layers), layers - 1)
             for kk in range(k, layers):
                 cum[kk][idx[c["user"]]] += 1
-    vmax = max(max(cum[-1]), 1)
-    stops = ["#EADEC4", "#A9B4B3", "#6E8596", "#3A5873", "#1C3349"]
+    vmax = max(max(cum[-1], default=0), 1)
+    # Earliest (inner) sand -> latest (outer) slate blue; the last step stays light enough to read
+    # against the dark background.
+    stops = ["#EADEC4", "#B4BDB9", "#7F95A6", "#557590", "#3A5A78"]
     body = []
     angles = [i * 2 * math.pi / max(n, 1) for i in range(n)]
-    if n >= 3:
-        for k in reversed(range(layers)):  # newest (largest, darkest) first
-            pts = [polar(cx, cy, R0 + (R - R0) * math.sqrt(cum[k][i] / vmax), angles[i]) for i in range(n)]
-            body.append(f'<path d="{closed_spline(pts)}" fill="{lerp_color(stops, k / (layers - 1))}" '
-                        f'filter="url(#innershadow)"/>')
+    # A closed outline needs several points: with only 1-2 contributors, add in-between points
+    # (pulled toward the centre) so each contributor still gets a smooth lobe.
+    fillers = 0 if n >= 3 else (5 if n == 1 else 2)
+    for k in reversed(range(layers)) if n else ():  # newest (largest, darkest) first
+        radii = [R0 + (R - R0) * math.sqrt(cum[k][i] / vmax) for i in range(n)]
+        pts = []
+        for i in range(n):
+            pts.append(polar(cx, cy, radii[i], angles[i]))
+            nxt = (i + 1) % n
+            gap = (angles[nxt] - angles[i]) % (2 * math.pi) or 2 * math.pi
+            valley = R0 + (min(radii[i], radii[nxt]) - R0) * 0.45
+            for f in range(1, fillers + 1):
+                pts.append(polar(cx, cy, valley, angles[i] + gap * f / (fillers + 1)))
+        body.append(f'<path d="{closed_spline(pts)}" fill="{lerp_color(stops, k / (layers - 1))}" '
+                    f'filter="url(#innershadow)"/>')
+    if not n:
+        body.append(f'<text x="{cx}" y="{cy}" font-size="14" fill="#fff" fill-opacity="0.7" text-anchor="middle">'
+                    'No contributors in this date range</text>')
     for i, u in enumerate(top):
         r = R0 + (R - R0) * math.sqrt(cum[-1][i] / vmax) + 55
         x, y = polar(cx, cy, r, angles[i])
@@ -367,32 +469,111 @@ def render_trunk(d, layers=7):
                     f'{esc(d.users[u]["name"])}</text>'
                     f'<text x="{x:.1f}" y="{y + 14:.1f}" font-size="10" fill="#fff" fill-opacity="0.7" text-anchor="{anchor}">'
                     f'{d.user_commits[u]:,} commits</text>')
-    sw = "".join(f'<rect x="{i * 7}" y="22" width="7" height="10" fill="{lerp_color(stops, i / (layers - 1))}"/>'
-                 for i in range(layers))
+    # Legend: one step per era across the full width, 2px gaps, a faint outline so dark steps show.
+    gap, width = 2, 200
+    step_w = (width - gap * (layers - 1)) / layers
+    era = (d.last - d.first) / layers
+    sw = "".join(
+        f'<rect x="{i * (step_w + gap):.2f}" y="24" width="{step_w:.2f}" height="12" rx="2" '
+        f'fill="{lerp_color(stops, i / (layers - 1))}" stroke="#fff" stroke-opacity="0.3" stroke-width="0.75">'
+        f'<title>{fmt_date(d.first + era * i)} – {fmt_date(d.first + era * (i + 1))}</title></rect>'
+        for i in range(layers))
     legend = (f'<text x="0" y="0" font-size="13" font-weight="bold" fill="#fff">Time</text>'
-              f'<rect x="0" y="12" width="200" height="1" fill="#fff" fill-opacity="0.6"/>{sw}'
-              f'<text x="0" y="45" font-size="8" fill="#fff">{fmt_date(d.first)}</text>'
-              f'<text x="{layers * 7 + 10}" y="45" font-size="8" fill="#fff">{fmt_date(d.last)}</text>')
+              f'<rect x="0" y="12" width="{width}" height="1" fill="#fff" fill-opacity="0.6"/>{sw}'
+              f'<text x="0" y="51" font-size="9.5" fill="#fff">{fmt_date(d.first)}</text>'
+              f'<text x="{width}" y="51" font-size="9.5" fill="#fff" text-anchor="end">{fmt_date(d.last)}</text>'
+              f'<text x="0" y="67" font-size="8.5" fill="#fff" fill-opacity="0.7">'
+              f'Inner layers = earliest · outer = most recent</text>')
     return space_poster(d, "\n".join(body), legend)
 
 
 # --------------------------------------------------------------------------- shared tree grouping (cross, core)
 
 
+# Folders that only describe *where code lives*, not *what it is about*. They're skipped when naming a
+# file's module so a Maven path like src/main/java/com/acme/app/billing/... becomes "billing".
+STRUCTURAL = {"src", "source", "sources", "main", "java", "kotlin", "scala", "groovy", "resources", "webapp",
+              "web-inf", "app", "lib", "libs", "pkg", "internal", "cmd", "jsons", "json", "static", "public",
+              "screens", "screen", "components", "comps", "features", "feature", "modules", "module", "pages",
+              "views", "containers", "packages", "apps", "test", "tests", "androidtest", "debug", "release",
+              "__tests__", "__mocks__", "assets", "images", "img", "icons", "fonts"}
+LAYERS = {"service", "services", "model", "models", "controller", "controllers", "dao", "daos", "dto", "dtos",
+          "util", "utils", "helper", "helpers", "config", "configuration", "resource", "resources", "impl", "api",
+          "v1", "v2", "v3", "constants", "constant", "enums", "enum", "request", "response", "requests",
+          "responses", "pojo", "pojos", "entity", "entities", "bean", "beans", "repository", "repositories",
+          "mapper", "mappers", "common", "core", "servermodel", "clientmodel", "dbmodel", "daomodel", "vo",
+          "summary", "quote", "postquote", "prequote", "data", "domain", "handlers", "routes"}
+TLDS = {"com", "org", "net", "io", "in", "co", "dev", "uk", "de", "fr", "app"}
+
+
+def module_names(paths, weight):
+    """Names each path's module: the first folder that says what the code is about.
+
+    Structural folders (src/main/java, resources/jsons, screens/...) and a reverse-domain package
+    prefix (com/<company>/...) are dropped; then any prefix most files share (e.g. "mobile" in
+    com/acme/mobile/...) is dropped too; then layer names (services, model, controller...) are
+    skipped. Files with nothing left are named after their top folder, or "(root)"."""
+    trimmed = {}
+    for p in paths:
+        segs = p.split("/")[:-1]
+        segs = [x for x in segs if x.lower() not in STRUCTURAL]
+        if segs and segs[0].lower() in TLDS and len(segs) > 1:
+            segs = segs[2:]                               # com/<company>
+        trimmed[p] = segs
+    # Strip prefixes shared by most of the weight (e.g. the app's base package), one level at a time.
+    total = sum(weight.get(p, 1) for p in paths) or 1
+    for _ in range(3):
+        firsts = Counter()
+        for p, segs in trimmed.items():
+            if len(segs) > 1:
+                firsts[segs[0]] += weight.get(p, 1)
+        if not firsts:
+            break
+        top, w = firsts.most_common(1)[0]
+        if w / total < 0.5:
+            break
+        for p, segs in trimmed.items():
+            if len(segs) > 1 and segs[0] == top:
+                trimmed[p] = segs[1:]
+    meaningful = {p: [x for x in segs if x.lower() not in LAYERS] for p, segs in trimmed.items()}
+    names = {}
+    for p, segs in trimmed.items():
+        if meaningful[p]:
+            names[p] = meaningful[p][0]
+        elif segs:
+            names[p] = segs[0]
+        else:
+            top = p.split("/")[0] if "/" in p else None
+            names[p] = top if top and top.lower() not in STRUCTURAL else "(root)"
+    # An umbrella module holding a large share (e.g. "product" over term/health/motor) is split one
+    # level deeper, so the designs show the real areas rather than one giant block.
+    share = Counter()
+    for p, n in names.items():
+        share[n] += weight.get(p, 1)
+    for umbrella, w in share.items():
+        if w / total < 0.3:
+            continue
+        for p, n in names.items():
+            if n == umbrella and len(meaningful[p]) > 1:
+                names[p] = meaningful[p][1]
+    return names
+
+
 def path_groups(d, min_share=0.004, max_children=14):
     """Returns [(level1, weight, [(level2, weight, [file_idx...])...])...] ordered by weight.
-    Weight = number of commits touching files in the group."""
+
+    Level 1 is the file group (as in the poster headers: Services, Models, TS, Tests...), level 2 the
+    module or feature folder (see module_names). Weight = number of commits touching the files."""
     touches = Counter()
     for c in d.commits:
         for f in c["files"]:
             touches[f["File"]] += 1
     total = sum(touches.values()) or 1
+    paths = {fi: d.files[fi] for fi in touches}
+    modules = module_names(list(paths.values()), {paths[fi]: w for fi, w in touches.items()})
     tree = defaultdict(lambda: defaultdict(list))
-    for fi, w in touches.items():
-        parts = d.files[fi].split("/")
-        l1 = parts[0]
-        l2 = parts[1] if len(parts) > 1 else parts[0]
-        tree[l1][l2].append(fi)
+    for fi, path in paths.items():
+        tree[d.classifier.group(path)][modules[path]].append(fi)
     groups, other = [], []
     for l1, kids in tree.items():
         w1 = sum(touches[f] for fs in kids.values() for f in fs)
@@ -402,18 +583,18 @@ def path_groups(d, min_share=0.004, max_children=14):
         children = sorted(((l2, sum(touches[f] for f in fs), fs) for l2, fs in kids.items()), key=lambda x: -x[1])
         if len(children) > max_children:
             rest = [f for _, _, fs in children[max_children:] for f in fs]
-            children = children[:max_children] + [("…", sum(touches[f] for f in rest), rest)]
+            children = children[:max_children] + [("other", sum(touches[f] for f in rest), rest)]
         groups.append((l1, w1, children))
     groups.sort(key=lambda g: -g[1])
     if other:
-        groups.append(("other", sum(touches[f] for f in other), [("other", sum(touches[f] for f in other), other)]))
+        groups.append(("Other", sum(touches[f] for f in other), [("other", sum(touches[f] for f in other), other)]))
     return groups, touches
 
 
 def footer_mono(d, y, color="#fff"):
     return (title_svg(d.name, 30, y, 14, MONO, color) +
             f'<text x="30" y="{y + 20}" font-family="{MONO}" font-size="10" fill="{color}">'
-            f'{esc(d.date_range)} ({esc(d.revision)})</text>')
+            f'{esc(d.date_range)} · {len(d.commits):,} commits · {len(d.user_commits):,} contributors</text>')
 
 
 # --------------------------------------------------------------------------- cross
@@ -421,13 +602,13 @@ def footer_mono(d, y, color="#fff"):
 
 def render_cross(d, max_authors=100):
     W, H, y0, y1 = 1000, 1500, 175, 1325
-    groups, _ = path_groups(d)
+    groups, _ = path_groups(d, max_children=24)  # the labelled column has room for more modules
     # authors: top N by commits, listed alphabetically, plus "others"
     top = d.top_users(max_authors)
     bold = set(d.top_users(20))
     authors = sorted(top, key=lambda u: d.users[u]["name"].lower())
     rest = set(d.user_commits) - set(top)
-    ay_step = (y1 - y0) / (len(authors) + (1 if rest else 0))
+    ay_step = (y1 - y0) / max(len(authors) + (1 if rest else 0), 1)
     ay = {u: y0 + (i + 0.5) * ay_step for i, u in enumerate(authors)}
     others_y = y0 + (len(authors) + 0.5) * ay_step
     file_seg = {}
@@ -443,7 +624,7 @@ def render_cross(d, max_authors=100):
     gap = 4
     total = sum(g[1] for g in groups) or 1
     scale = (y1 - y0 - gap * (len(groups) - 1)) / total
-    X1, X2, X3, XA = 14, 30, 44, 590.4
+    X1, X2, X3, XA = 14, 30, 150, 590.4  # group column, module column (labelled), ribbon start, authors
     body, ribbons, y = [], [], y0
     max_w = max((w for sa in seg_auth.values() for w in sa.values()), default=1)
     for gi, (l1, w1, children) in enumerate(groups):
@@ -458,7 +639,15 @@ def render_cross(d, max_authors=100):
         for ci, (l2, w2, _) in enumerate(children):
             h2 = w2 * scale
             body.append(f'<rect x="{X2}" y="{cy_:.2f}" width="{X3 - X2}" height="{h2:.2f}" fill="#fff" fill-opacity="0.85" '
-                        f'stroke="#054367" stroke-width="0.4"><title>{esc(l1)}/{esc(l2)} ({w2} commits)</title></rect>')
+                        f'stroke="#054367" stroke-width="0.4"><title>{esc(l1)} › {esc(l2)} ({w2} commits)</title></rect>')
+            if h2 >= 8:  # label the module when the box is tall enough for a line of text
+                fs = min(9, h2 - 1)
+                text = f"{l2} ({fmt_k(w2)})"
+                max_chars = int((X3 - X2 - 6) / (fs * 0.6))
+                if len(text) > max_chars:
+                    text = text[:max_chars - 1] + "…"
+                body.append(f'<text x="{X2 + 4}" y="{cy_ + h2 / 2 + fs * 0.35:.2f}" font-family="{MONO}" '
+                            f'font-size="{fs:.1f}" fill="#054367">{esc(text)}</text>')
             sa = seg_auth[(gi, ci)]
             order = sorted(sa, key=lambda u: ay.get(u, others_y))
             tot = sum(sa.values()) or 1
@@ -608,7 +797,7 @@ body{{margin:0;padding:24px 16px;background:#0b1620;color:#e8eef2;font:14px syst
 h1{{font-size:20px;margin:0 0 4px}}p{{margin:0 0 20px;opacity:.7}}
 main{{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}}
 figure{{margin:0}}img{{width:100%;display:block;border-radius:6px;background:#000}}figcaption{{margin-top:6px;opacity:.8}}
-</style></head><body><h1>{esc(d.name)}</h1><p>{esc(d.date_range)} · {len(d.commits):,} commits · revision {esc(d.revision)}</p>
+</style></head><body><h1>{esc(d.name)}</h1><p>{esc(d.date_range)} · {len(d.commits):,} commits · {len(d.user_commits):,} contributors</p>
 <main>{cards}</main></body></html>"""
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
         f.write(page)
@@ -620,6 +809,9 @@ def render_all(d, out, designs=None):
     unknown = [n for n in names if n not in RENDERERS]
     if unknown:
         raise SystemExit(f"Unknown design(s): {', '.join(unknown)}. Available: {', '.join(RENDERERS)}")
+    if not d.commits and d.bots:
+        print("  Warning: every commit in this range is from a bot; the visualizations will be empty. "
+              "Use --include-bots to show them.")
     os.makedirs(out, exist_ok=True)
     paths = []
     for n in names:
@@ -641,9 +833,14 @@ def main():
     ap.add_argument("--designs", help=f"comma-separated, default all: {','.join(RENDERERS)}")
     ap.add_argument("--title", "--name", dest="title", help="override the project title")
     ap.add_argument("--include-bots", action="store_true", help="keep dependabot/CI bot commits")
+    ap.add_argument("--aliases", help='JSON file: {"aliases": {"old name": "Final Name"}, "exclude": [...]}')
+    ap.add_argument("--file-groups", help=f"file-groups JSON file or preset ({', '.join(PRESETS)}); "
+                                          "default: detected from the files")
     a = ap.parse_args()
+    aliases, exclude = load_aliases(a.aliases) if a.aliases else ({}, set())
+    profile = load_profile(a.file_groups) if a.file_groups else None
     with open(a.analysis, encoding="utf-8") as f:
-        d = Data(json.load(f), a.title, a.include_bots)
+        d = Data(json.load(f), a.title, a.include_bots, aliases, exclude, profile)
     designs = [n.strip() for n in a.designs.split(",") if n.strip()] if a.designs else None
     render_all(d, a.out, designs)
 

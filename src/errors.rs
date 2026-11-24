@@ -18,6 +18,11 @@ pub enum UserError {
 	InvalidDate { value: String },
 	#[error("The start date {from} is after the end date {to}")]
 	InvalidRange { from: String, to: String },
-	#[error("No commits found between {from} and {to}")]
-	NoCommitsInRange { from: String, to: String },
+	#[error("No commits found between {from} and {to} (this repository has commits from {first} to {last}; use --from/--to)")]
+	NoCommitsInRange {
+		from: String,
+		to: String,
+		first: String,
+		last: String,
+	},
 }

@@ -4,7 +4,7 @@ mod git;
 mod languages;
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::{Datelike, Local, NaiveDate};
 use clap::Parser;
 use dialoguer::Input;
 use pbr::ProgressBar;
@@ -32,13 +32,25 @@ struct Args {
 	#[arg(short, long)]
 	target: Option<String>,
 
-	/// First day to include (YYYY-MM-DD). Defaults to the first commit.
+	/// First day to include (YYYY-MM-DD). Default: 1 Jan this year if we're past
+	/// 1 July, otherwise 1 Jan last year.
 	#[arg(long)]
 	from: Option<String>,
 
-	/// Last day to include (YYYY-MM-DD). Defaults to the latest commit.
+	/// Last day to include (YYYY-MM-DD). Default: today if we're past 1 July,
+	/// otherwise 31 Dec last year.
 	#[arg(long)]
 	to: Option<String>,
+
+	/// JSON file merging author identities: {"aliases": {"old name": "Final Name"},
+	/// "exclude": ["name"]}. The web interface can export one.
+	#[arg(long)]
+	aliases: Option<PathBuf>,
+
+	/// How files are grouped (and which are left out): a JSON file exported from the web
+	/// interface, or a preset: "default", "react-native" or "backend". Default: detected from the files.
+	#[arg(long)]
+	file_groups: Option<String>,
 
 	/// Project title shown on the visualizations.
 	#[arg(long)]
@@ -98,6 +110,20 @@ fn ask_date(args: &Args, prompt: &str, default: NaiveDate) -> Result<NaiveDate> 
 	parse_date(&answer)
 }
 
+/// The default range: this year so far once it's more than six months old (from 1 July),
+/// otherwise the whole of last year.
+fn default_range(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+	let year = today.year();
+	if today >= NaiveDate::from_ymd_opt(year, 7, 1).expect("valid date") {
+		(NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"), today)
+	} else {
+		(
+			NaiveDate::from_ymd_opt(year - 1, 1, 1).expect("valid date"),
+			NaiveDate::from_ymd_opt(year - 1, 12, 31).expect("valid date"),
+		)
+	}
+}
+
 fn parse_date(value: &str) -> Result<NaiveDate> {
 	NaiveDate::parse_from_str(value.trim(), DATE_FORMAT).map_err(|_| {
 		UserError::InvalidDate {
@@ -135,12 +161,42 @@ fn step(n: u8, message: &str) {
 	println!("[{}/{}]\t{}", n, NUM_STEPS, message);
 }
 
+/// File-group presets; keep in sync with PRESETS in commitscape/filegroups.py.
+const FILE_GROUP_PRESETS: [&str; 3] = ["default", "react-native", "backend"];
+
 /// Designs the renderer knows; keep in sync with RENDERERS in commitscape/render.py.
 const DESIGNS: [&str; 5] = ["week-circles", "user-bubbles", "trunk", "cross", "core"];
 
 fn run() -> Result<()> {
 	let args = Args::parse();
 	let launch_dir = std::env::current_dir()?;
+	// Resolve the aliases file now (we change into the repository later) and fail fast if missing.
+	let aliases = match &args.aliases {
+		Some(p) => {
+			let full = launch_dir.join(p);
+			if !full.is_file() {
+				anyhow::bail!("aliases file not found: {}", full.display());
+			}
+			Some(full)
+		}
+		None => None,
+	};
+	// A file-groups value is either a preset name or a path relative to where we started.
+	let file_groups = match &args.file_groups {
+		Some(v) if FILE_GROUP_PRESETS.contains(&v.as_str()) => Some(v.clone()),
+		Some(v) => {
+			let full = launch_dir.join(v);
+			if !full.is_file() {
+				anyhow::bail!(
+					"file groups not found: {} (use a JSON file or one of: {})",
+					full.display(),
+					FILE_GROUP_PRESETS.join(", ")
+				);
+			}
+			Some(full.to_string_lossy().into_owned())
+		}
+		None => None,
+	};
 
 	// Reject unknown design names before spending time on the analysis.
 	if let Some(designs) = &args.designs {
@@ -189,13 +245,14 @@ fn run() -> Result<()> {
 
 	// 3. Date range and title.
 	step(2, "Choose what to visualize");
+	let (default_from, default_to) = default_range(Local::now().date_naive());
 	let from = match &args.from {
 		Some(v) => parse_date(v)?,
-		None => ask_date(&args, "Start date (YYYY-MM-DD)", first)?,
+		None => ask_date(&args, "Start date (YYYY-MM-DD)", default_from)?,
 	};
 	let to = match &args.to {
 		Some(v) => parse_date(v)?,
-		None => ask_date(&args, "End date (YYYY-MM-DD)", last)?,
+		None => ask_date(&args, "End date (YYYY-MM-DD)", default_to)?,
 	};
 	if from > to {
 		return Err(UserError::InvalidRange {
@@ -209,6 +266,8 @@ fn run() -> Result<()> {
 		return Err(UserError::NoCommitsInRange {
 			from: from.to_string(),
 			to: to.to_string(),
+			first: first.to_string(),
+			last: last.to_string(),
 		}
 		.into());
 	}
@@ -253,7 +312,7 @@ fn run() -> Result<()> {
 		return Ok(());
 	}
 	step(4, "Rendering SVGs...");
-	render(&args, &json_path, &out_dir)?;
+	render(&args, aliases.as_deref(), file_groups.as_deref(), &json_path, &out_dir)?;
 	println!("\nDone. Open {} to see them all.", out_dir.join("index.html").display());
 	Ok(())
 }
@@ -308,7 +367,13 @@ fn renderer_home() -> Option<PathBuf> {
 	None
 }
 
-fn render(args: &Args, json_path: &Path, out_dir: &Path) -> Result<()> {
+fn render(
+	args: &Args,
+	aliases: Option<&Path>,
+	file_groups: Option<&str>,
+	json_path: &Path,
+	out_dir: &Path,
+) -> Result<()> {
 	let home = renderer_home().context(
 		"couldn't find the commitscape renderer; set COMMITSCAPE_HOME to the project directory",
 	)?;
@@ -322,6 +387,12 @@ fn render(args: &Args, json_path: &Path, out_dir: &Path) -> Result<()> {
 		.arg(out_dir);
 	if let Some(designs) = &args.designs {
 		cmd.arg("--designs").arg(designs);
+	}
+	if let Some(aliases) = aliases {
+		cmd.arg("--aliases").arg(aliases);
+	}
+	if let Some(groups) = file_groups {
+		cmd.arg("--file-groups").arg(groups);
 	}
 	if args.include_bots {
 		cmd.arg("--include-bots");

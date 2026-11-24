@@ -70,6 +70,7 @@ impl Analyser for Git2Analyser {
 
 			let user_index = data.get_user_index(&author_name);
 			data.users[user_index].contributions += 1;
+			data.users[user_index].add_email(sig.email().unwrap_or(""));
 
 			let git_time = sig.when();
 			let time = FixedOffset::east_opt(git_time.offset_minutes() * 60)

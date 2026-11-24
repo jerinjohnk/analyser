@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct User {
 	pub name: String,
 	pub contributions: usize,
+	/// Every email this author committed with (after .mailmap), to help spot duplicates.
+	pub emails: Vec<String>,
 }
 
 impl User {
@@ -13,6 +15,14 @@ impl User {
 		User {
 			name,
 			contributions: 0,
+			emails: vec![],
+		}
+	}
+
+	pub fn add_email(&mut self, email: &str) {
+		let email = email.trim();
+		if !email.is_empty() && !self.emails.iter().any(|e| e.eq_ignore_ascii_case(email)) {
+			self.emails.push(email.to_string());
 		}
 	}
 }

@@ -60,7 +60,7 @@ def analyse(target):
     root = git("rev-parse", "--show-toplevel", cwd=target).decode().strip()
     rev = git("rev-parse", "HEAD", cwd=root).decode().strip()
     log = git("log", "--all", "--numstat", "--date=rfc2822", "--use-mailmap",
-              "--pretty=format:#%H#%ad#%aN#%f", "--no-renames", "--no-expand-tabs",
+              "--pretty=format:#%H#%ad#%aE#%aN#%f", "--no-renames", "--no-expand-tabs",
               "--no-merges", "--encoding=UTF-8", cwd=root).decode("utf-8", "replace")
 
     files, files_map, users, users_map, commits = [], {}, [], {}, []
@@ -74,7 +74,7 @@ def analyse(target):
     def user_idx(n):
         if n not in users_map:
             users_map[n] = len(users)
-            users.append({"name": n, "contributions": 0})
+            users.append({"name": n, "contributions": 0, "emails": []})
         return users_map[n]
 
     commit = None
@@ -87,11 +87,19 @@ def analyse(target):
         if line.startswith("#"):
             if commit:
                 commits.append(commit)
+            # #hash#date#email#name#subject-slug; the slug never contains '#', so split it
+            # off from the right to keep author names containing '#' intact.
             parts = line[1:].split("#", 3)
             t = parsedate_to_datetime(parts[1])
-            u = user_idx(parts[2] if len(parts) > 2 else "Unknown")
+            email = parts[2].strip() if len(parts) > 2 else ""
+            name, _, slug = (parts[3] if len(parts) > 3 else "Unknown").rpartition("#")
+            if not name:
+                name, slug = slug, ""
+            u = user_idx(name)
             users[u]["contributions"] += 1
-            words = filter_words(parts[3].split("-")) if len(parts) > 3 else []
+            if email and email.lower() not in (e.lower() for e in users[u]["emails"]):
+                users[u]["emails"].append(email)
+            words = filter_words(slug.split("-")) if slug else []
             commit = {"id": parts[0], "time": t.isoformat(), "user": u, "files": [], "words": words}
         elif commit is not None:
             cols = line.split("\t", 2)
@@ -125,6 +133,14 @@ def analyse(target):
     }, root
 
 
+def default_range(today=None):
+    """This year so far once it's more than six months old (from 1 July), otherwise all of last year."""
+    today = today or date.today()
+    if today >= date(today.year, 7, 1):
+        return date(today.year, 1, 1), today
+    return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
+
+
 def date_bounds(data):
     """(first, last) commit dates, or None for an empty history."""
     days = [c["time"][:10] for c in data["commits"]]
@@ -147,15 +163,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", default=".")
     ap.add_argument("--out", default="analysis.json")
-    ap.add_argument("--from", dest="start", type=date.fromisoformat, help="first day to include (YYYY-MM-DD)")
-    ap.add_argument("--to", dest="end", type=date.fromisoformat, help="last day to include (YYYY-MM-DD)")
+    ap.add_argument("--from", dest="start", type=date.fromisoformat,
+                    help="first day (YYYY-MM-DD); default: 1 Jan this year from July on, else 1 Jan last year")
+    ap.add_argument("--to", dest="end", type=date.fromisoformat,
+                    help="last day (YYYY-MM-DD); default: today from July on, else 31 Dec last year")
     ap.add_argument("--title", help="project title shown on the visualizations")
     a = ap.parse_args()
     data, _ = analyse(a.target)
     bounds = date_bounds(data)
     if not bounds:
         sys.exit("This repository has no commits to visualize")
-    retain_range(data, a.start or bounds[0], a.end or bounds[1])
+    default_start, default_end = default_range()
+    retain_range(data, a.start or default_start, a.end or default_end)
     if a.title:
         data["meta"]["title"] = a.title
     with open(a.out, "w", encoding="utf-8") as f:
