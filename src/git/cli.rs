@@ -24,7 +24,7 @@ fn call_git(args: Vec<&'static str>) -> Result<String> {
 		Ok(capture.stdout_str().trim().to_string())
 	} else {
 		Err(AnalysisError::Git {
-			message: capture.stderr_str(),
+			message: capture.stderr_str().trim().to_string(),
 		}
 		.into())
 	}
@@ -90,7 +90,7 @@ impl Analyser for CliAnalyser {
 	}
 
 	fn get_commit_count(&self) -> Result<u64> {
-		let count_str = call_git(vec!["rev-list", "--count", "HEAD"])?;
+		let count_str = call_git(vec!["rev-list", "--count", "--all", "--no-merges"])?;
 
 		Ok(count_str.parse::<u64>()?)
 	}
@@ -129,6 +129,12 @@ impl Analyser for CliAnalyser {
 			if let Some(marker) = line.strip_prefix('#') {
 				pb.inc();
 
+				// Commits without file changes (e.g. empty commits) have no numstat block,
+				// so the next header can arrive with no blank line in between.
+				if let Some(previous) = commit.take() {
+					data.commits.push(previous);
+				}
+
 				let mut parts = marker.splitn(4, '#');
 
 				let id = parts.next().ok_or(AnalysisError::Parse {
@@ -140,13 +146,6 @@ impl Analyser for CliAnalyser {
 				})?;
 
 				let time = DateTime::parse_from_rfc2822(time_str)?;
-
-				use chrono::{Datelike};  // Add Datelike trait
-				// Skip if not from 2024
-      			if time.date_naive().year() != 2025 {
-        			commit = None;
-        			continue;
-      			}
 
 				let author_name = parts.next().unwrap_or("Unknown");
 

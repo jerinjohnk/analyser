@@ -44,9 +44,9 @@ jobs:
       - name: Compress binaries
         uses: svenstaro/upx-action@v2
         with:
-          file: "target/${{ matrix.triple.target }}/release/analyser${{ matrix.triple.ext }}"
+          file: "target/${{ matrix.triple.target }}/release/commitscape${{ matrix.triple.ext }}"
       - name: Upload
         uses: actions/upload-artifact@v2
         with:
           name: "${{ matrix.triple.target }}_${{ matrix.features }}"
-          path: "target/${{ matrix.triple.target }}/release/analyser${{ matrix.triple.ext }}"
+          path: "target/${{ matrix.triple.target }}/release/commitscape${{ matrix.triple.ext }}"

@@ -72,8 +72,11 @@ impl Analyser for Git2Analyser {
 			data.users[user_index].contributions += 1;
 
 			let git_time = sig.when();
-			let time =
-				FixedOffset::east(git_time.offset_minutes() * 60).timestamp(git_time.seconds(), 0);
+			let time = FixedOffset::east_opt(git_time.offset_minutes() * 60)
+				.and_then(|tz| tz.timestamp_opt(git_time.seconds(), 0).single())
+				.ok_or(AnalysisError::Parse {
+					message: "Invalid commit time",
+				})?;
 
 			let a = if commit.parents().len() == 1 {
 				let parent = commit.parent(0)?;

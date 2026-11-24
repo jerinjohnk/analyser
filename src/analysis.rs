@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -51,6 +51,16 @@ pub struct Language {
 	pub bytes: usize,
 }
 
+/// Display settings chosen by the user, read by the SVG renderer.
+#[derive(Debug, Default, Serialize)]
+pub struct Meta {
+	/// Project title shown on every visualization.
+	pub title: String,
+	/// Inclusive date range (YYYY-MM-DD) the visualizations cover.
+	pub from: String,
+	pub to: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Analysis {
 	pub commits: Vec<Commit>,
@@ -64,6 +74,7 @@ pub struct Analysis {
 	pub revision: String,
 	#[serde(rename = "totalBytes")]
 	pub total_bytes: usize,
+	pub meta: Meta,
 	#[serde(skip)]
 	stop_words: HashMap<&'static str, u8>,
 }
@@ -79,6 +90,7 @@ impl Analysis {
 			languages: vec![],
 			revision: revision.to_owned(),
 			total_bytes: 0,
+			meta: Meta::default(),
 			stop_words: get_stop_words(),
 		}
 	}
@@ -103,6 +115,31 @@ impl Analysis {
 			self.users_map.insert(name.to_string(), index);
 			index
 		}
+	}
+
+	/// Returns the dates of the oldest and newest commits, if there are any.
+	pub fn date_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+		let dates = self.commits.iter().map(|c| c.time.date_naive());
+		let min = dates.clone().min()?;
+		let max = dates.max()?;
+		Some((min, max))
+	}
+
+	/// Keeps only commits whose author date falls within `from..=to`
+	/// and recounts each user's contributions accordingly.
+	pub fn retain_range(&mut self, from: NaiveDate, to: NaiveDate) {
+		self.commits.retain(|c| {
+			let d = c.time.date_naive();
+			d >= from && d <= to
+		});
+		for user in &mut self.users {
+			user.contributions = 0;
+		}
+		for commit in &self.commits {
+			self.users[commit.user].contributions += 1;
+		}
+		self.meta.from = from.format("%Y-%m-%d").to_string();
+		self.meta.to = to.format("%Y-%m-%d").to_string();
 	}
 
 	pub fn filter_stop_words<'a, I>(&self, words: I) -> Vec<String>
