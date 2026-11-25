@@ -31,9 +31,17 @@ impl Analyser for Git2Analyser {
 	}
 
 	fn get_commit_count(&self) -> Result<u64> {
+		// Walk the same commits as `analyse` and leave out merge commits, so the
+		// count matches what is actually attributed to authors.
 		let mut revwalk = self.repo.revwalk()?;
 		revwalk.set_sorting(git2::Sort::NONE)?;
-		Ok(revwalk.count() as u64)
+		revwalk.push_head()?;
+		let count = revwalk
+			.filter_map(|id| id.ok())
+			.filter_map(|id| self.repo.find_commit(id).ok())
+			.filter(|commit| commit.parent_count() <= 1)
+			.count();
+		Ok(count as u64)
 	}
 
 	fn get_current_revision(&self) -> Result<String> {

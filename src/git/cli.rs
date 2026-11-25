@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::DateTime;
 use log::warn;
 use pbr::ProgressBar;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use subprocess::{Exec, Redirection};
 
@@ -37,6 +38,89 @@ fn call_git_stream(args: Vec<&'static str>) -> Result<Box<dyn std::io::Read>> {
 	}
 
 	Ok(Box::new(command.stream_stdout()?))
+}
+
+/// Maps each non-merge commit hash (all refs) to its stable patch id. Commits with no
+/// diff (e.g. empty commits) have no patch id and are left out.
+fn patch_ids() -> Result<HashMap<String, String>> {
+	let log = Exec::cmd("git").args(&[
+		"log",
+		"--all",
+		"--no-merges",
+		"-p",
+		"--no-renames",
+		"--format=commit %H",
+	]);
+	let capture = (log | Exec::cmd("git").args(&["patch-id", "--stable"]))
+		.stdout(Redirection::Pipe)
+		.capture()?;
+	if !capture.success() {
+		return Err(AnalysisError::Git {
+			message: "git patch-id failed".to_string(),
+		}
+		.into());
+	}
+
+	Ok(capture
+		.stdout_str()
+		.lines()
+		.filter_map(|line| line.split_once(' '))
+		.map(|(pid, sha)| (sha.to_string(), pid.to_string()))
+		.collect())
+}
+
+/// Removes copies of the same commit made by rebase or cherry-pick (they live on other
+/// refs under new hashes, e.g. a feature branch left behind after "rebase and merge").
+/// Copies share the patch, the author and the author date; of each set the one reachable
+/// from HEAD is kept, otherwise the oldest in log order.
+fn drop_rebased_copies(data: &mut Analysis) -> Result<()> {
+	let ids = patch_ids()?;
+	let head_list = call_git(vec!["rev-list", "--no-merges", "HEAD"])?;
+	let on_head: HashSet<&str> = head_list.split_whitespace().collect();
+
+	// (patch id, user, author time) -> index of the commit kept
+	let mut keep: HashMap<(&str, usize, i64, i32), usize> = HashMap::new();
+	let key_of = |c: &Commit| {
+		ids.get(&c.id).map(|pid| {
+			(
+				pid.as_str(),
+				c.user,
+				c.time.timestamp(),
+				c.time.offset().local_minus_utc(),
+			)
+		})
+	};
+	for (i, c) in data.commits.iter().enumerate() {
+		if let Some(key) = key_of(c) {
+			// Log order is newest first, so a later index is the older copy.
+			let replace = match keep.get(&key) {
+				None => true,
+				Some(&j) => on_head.contains(c.id.as_str()) || !on_head.contains(data.commits[j].id.as_str()),
+			};
+			if replace {
+				keep.insert(key, i);
+			}
+		}
+	}
+
+	let drop: Vec<bool> = data
+		.commits
+		.iter()
+		.enumerate()
+		.map(|(i, c)| key_of(c).map_or(false, |key| keep[&key] != i))
+		.collect();
+	for (i, c) in data.commits.iter().enumerate() {
+		if drop[i] {
+			data.users[c.user].contributions -= 1;
+		}
+	}
+	let mut i = 0;
+	data.commits.retain(|_| {
+		i += 1;
+		!drop[i - 1]
+	});
+
+	Ok(())
 }
 
 struct LossyLineReader {
@@ -182,6 +266,7 @@ impl Analyser for CliAnalyser {
 			data.commits.push(commit);
 		}
 
-		Ok(())
+		drop_rebased_copies(data)
+
 	}
 }

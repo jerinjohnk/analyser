@@ -53,6 +53,48 @@ def git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True).stdout
 
 
+def patch_ids(root):
+    """Maps each non-merge commit hash (all refs) to its stable patch id. Commits with no
+    diff (e.g. empty commits) have no patch id and are left out."""
+    log = subprocess.Popen(["git", "log", "--all", "--no-merges", "-p", "--no-renames",
+                            "--format=commit %H"], cwd=root, stdout=subprocess.PIPE)
+    out = subprocess.run(["git", "patch-id", "--stable"], cwd=root, stdin=log.stdout,
+                         capture_output=True, check=True).stdout
+    log.stdout.close()
+    if log.wait() != 0:
+        raise subprocess.CalledProcessError(log.returncode, "git log -p")
+    ids = {}
+    for line in out.decode().splitlines():
+        pid, _, sha = line.partition(" ")
+        if sha:
+            ids[sha] = pid
+    return ids
+
+
+def drop_rebased_copies(commits, users, root):
+    """Removes copies of the same commit made by rebase or cherry-pick (they live on other
+    refs under new hashes, e.g. a feature branch left behind after "rebase and merge").
+    Copies share the patch, the author and the author date; of each set the one reachable
+    from HEAD is kept, otherwise the oldest in log order. Returns the commits kept."""
+    ids = patch_ids(root)
+    on_head = set(git("rev-list", "--no-merges", "HEAD", cwd=root).decode().split())
+    keep = {}  # (patch id, user, author time) -> index of the commit kept
+    for i, c in enumerate(commits):
+        pid = ids.get(c["id"])
+        if pid is None:
+            continue
+        key = (pid, c["user"], c["time"])
+        j = keep.get(key)
+        # Log order is newest first, so a later index is the older copy.
+        if j is None or c["id"] in on_head or commits[j]["id"] not in on_head:
+            keep[key] = i
+    drop = {i for i, c in enumerate(commits)
+            if c["id"] in ids and keep[(ids[c["id"]], c["user"], c["time"])] != i}
+    for i in drop:
+        users[commits[i]["user"]]["contributions"] -= 1
+    return [c for i, c in enumerate(commits) if i not in drop]
+
+
 def analyse(target):
     """Reads the full history. Returns (analysis dict, repo root)."""
     global STOP_WORDS
@@ -110,6 +152,7 @@ def analyse(target):
             commit["files"].append({"File": file_idx(cols[2]), "Additions": add, "Deletions": dele})
     if commit:
         commits.append(commit)
+    commits = drop_rebased_copies(commits, users, root)
 
     ext_map = load_languages()
     langs, total = {}, 0
