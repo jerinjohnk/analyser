@@ -23,14 +23,17 @@ STOP_WORDS = None
 
 def load_stop_words():
     """Reads the stop-word list from src/analysis.rs so both analysers agree."""
-    src = open(os.path.join(HERE, "..", "src", "analysis.rs"), encoding="utf-8").read()
-    body = src[src.index("fn get_stop_words"):]
-    return set(re.findall(r'\("([^"]+)", 0\)', body))
+    with open(os.path.join(HERE, "..", "src", "analysis.rs"), encoding="utf-8") as f:
+        src = f.read()
+    start = src.index("static STOP_WORDS")
+    body = src[start:src.index("])", start)]
+    return set(re.findall(r'^\s*"([^"]+)",', body, re.M))
 
 
 def load_languages():
     """Reads LANG_NAMES and the extension index from src/languages.rs."""
-    src = open(os.path.join(HERE, "..", "src", "languages.rs"), encoding="utf-8").read()
+    with open(os.path.join(HERE, "..", "src", "languages.rs"), encoding="utf-8") as f:
+        src = f.read()
     names_block = src[src.index("LANG_NAMES"):src.index("];")]
     names = re.findall(r'^\s*"((?:[^"\\]|\\.)*)",', names_block, re.M)
     index_block = src[src.index("fn get_language_index"):]

@@ -1,12 +1,11 @@
 use ::git2::{DiffOptions, Repository};
 use anyhow::Result;
 use chrono::{FixedOffset, TimeZone};
-use pbr::ProgressBar;
-use regex::Regex;
+use indicatif::ProgressBar;
 
 use crate::analysis::{Analysis, Change, Commit};
 use crate::errors::AnalysisError;
-use crate::git::{parse_stat_line, Analyser};
+use crate::git::{Analyser, parse_stat_line};
 
 pub struct Git2Analyser {
 	repo: Repository,
@@ -15,7 +14,7 @@ pub struct Git2Analyser {
 impl Git2Analyser {
 	pub fn new() -> Result<Git2Analyser> {
 		let repo = Repository::discover(".").map_err(|e| AnalysisError::Git {
-			message: format!("Can't find Git repository: {:?}", e),
+			message: format!("Can't find Git repository: {e}"),
 		})?;
 
 		Ok(Git2Analyser { repo })
@@ -50,35 +49,27 @@ impl Analyser for Git2Analyser {
 		Ok(rev.id().to_string())
 	}
 
-	fn analyse(&self, data: &mut Analysis, pb: &mut ProgressBar<std::io::Stdout>) -> Result<()> {
+	fn analyse(&self, data: &mut Analysis, pb: &ProgressBar) -> Result<()> {
 		let mut diffopts = DiffOptions::new();
 
 		let mut revwalk = self.repo.revwalk()?;
 		revwalk.push_head()?;
 
-		let word_splitter = Regex::new(r"\b").unwrap();
-
 		for id in revwalk {
-			let id = match id {
-				Ok(id) => id,
-				Err(_) => continue,
+			let Ok(id) = id else { continue };
+			let Ok(commit) = self.repo.find_commit(id) else {
+				continue;
 			};
-			let commit = match self.repo.find_commit(id) {
-				Ok(commit) => commit,
-				Err(_) => continue,
-			};
-
-			if commit.parents().len() > 1 {
+			if commit.parent_count() > 1 {
 				// merge commit
 				continue;
 			}
 
 			let sig = commit.author();
-			let author_name = sig.name().unwrap_or("Unknown").to_string();
-
-			let user_index = data.get_user_index(&author_name);
-			data.users[user_index].contributions += 1;
-			data.users[user_index].add_email(sig.email().unwrap_or(""));
+			let user_index = data.get_user_index(&String::from_utf8_lossy(sig.name_bytes()));
+			let user = &mut data.users[user_index];
+			user.contributions += 1;
+			user.add_email(&String::from_utf8_lossy(sig.email_bytes()));
 
 			let git_time = sig.when();
 			let time = FixedOffset::east_opt(git_time.offset_minutes() * 60)
@@ -87,11 +78,9 @@ impl Analyser for Git2Analyser {
 					message: "Invalid commit time",
 				})?;
 
-			let a = if commit.parents().len() == 1 {
-				let parent = commit.parent(0)?;
-				Some(parent.tree()?)
-			} else {
-				None
+			let a = match commit.parent_count() {
+				1 => Some(commit.parent(0)?.tree()?),
+				_ => None,
 			};
 			let b = commit.tree()?;
 
@@ -99,11 +88,10 @@ impl Analyser for Git2Analyser {
 				.repo
 				.diff_tree_to_tree(a.as_ref(), Some(&b), Some(&mut diffopts))?;
 
-			let words = if let Some(message) = commit.message_raw() {
-				data.filter_stop_words(word_splitter.split(message))
-			} else {
-				vec![]
-			};
+			// Split the message into words (letters, digits and underscores).
+			let message = String::from_utf8_lossy(commit.message_raw_bytes());
+			let words =
+				data.filter_stop_words(message.split(|c: char| !(c.is_alphanumeric() || c == '_')));
 
 			let mut c = Commit {
 				id: id.to_string(),
@@ -125,7 +113,7 @@ impl Analyser for Git2Analyser {
 			}
 
 			data.commits.push(c);
-			pb.inc();
+			pb.inc(1);
 		}
 
 		Ok(())

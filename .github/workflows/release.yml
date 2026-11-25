@@ -2,51 +2,50 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
   release:
-    name: release ${{ matrix.triple.target }}
+    name: release ${{ matrix.triple.target }} (${{ matrix.features }})
     runs-on: ${{ matrix.triple.os }}
     strategy:
       fail-fast: false
       matrix:
         features: ["git", "git-libgit2"]
         triple:
-          - os: 'macOS-latest'
+          - os: 'macos-latest'
+            target: 'aarch64-apple-darwin'
+            ext: ""
+          - os: 'macos-15-intel'
             target: 'x86_64-apple-darwin'
-            cross: false
             ext: ""
           - os: 'ubuntu-latest'
             target: 'x86_64-unknown-linux-gnu'
-            cross: false
             ext: ""
           - os: 'windows-latest'
             target: 'x86_64-pc-windows-msvc'
-            cross: false
             ext: ".exe"
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
       - name: Toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.triple.target }}
-          override: true
-      - name: build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          use-cross: ${{ matrix.triple.cross }}
-          args: >
-            --target ${{ matrix.triple.target }}
-            --features ${{ matrix.features }}
-            --release
+          targets: ${{ matrix.triple.target }}
+      - name: Build
+        run: >
+          cargo build --locked --release
+          --target ${{ matrix.triple.target }}
+          --no-default-features --features ${{ matrix.features }}
       - name: Compress binaries
-        uses: svenstaro/upx-action@v2
+        # UPX can't pack macOS binaries reliably any more, so only compress the others.
+        if: runner.os != 'macOS'
+        uses: svenstaro/upx-action@v3
         with:
-          file: "target/${{ matrix.triple.target }}/release/commitscape${{ matrix.triple.ext }}"
+          files: "target/${{ matrix.triple.target }}/release/commitscape${{ matrix.triple.ext }}"
       - name: Upload
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v7
         with:
           name: "${{ matrix.triple.target }}_${{ matrix.features }}"
           path: "target/${{ matrix.triple.target }}/release/commitscape${{ matrix.triple.ext }}"

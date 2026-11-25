@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Local, NaiveDate};
 use clap::Parser;
 use dialoguer::Input;
-use pbr::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,7 +15,7 @@ use std::process::Command;
 use crate::analysis::{Analysis, Language};
 use crate::errors::UserError;
 use crate::git::get_analyser as get_git_analyser;
-use crate::languages::{get_language_index, LANG_NAMES};
+use crate::languages::{LANG_NAMES, get_language_index};
 
 const NUM_STEPS: u8 = 4;
 const DATE_FORMAT: &str = "%Y-%m-%d";
@@ -115,7 +115,10 @@ fn ask_date(args: &Args, prompt: &str, default: NaiveDate) -> Result<NaiveDate> 
 fn default_range(today: NaiveDate) -> (NaiveDate, NaiveDate) {
 	let year = today.year();
 	if today >= NaiveDate::from_ymd_opt(year, 7, 1).expect("valid date") {
-		(NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"), today)
+		(
+			NaiveDate::from_ymd_opt(year, 1, 1).expect("valid date"),
+			today,
+		)
 	} else {
 		(
 			NaiveDate::from_ymd_opt(year - 1, 1, 1).expect("valid date"),
@@ -143,7 +146,13 @@ fn expand_home(path: &str) -> PathBuf {
 fn slugify(title: &str) -> String {
 	let slug: String = title
 		.chars()
-		.map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+		.map(|c| {
+			if c.is_alphanumeric() {
+				c.to_ascii_lowercase()
+			} else {
+				'-'
+			}
+		})
 		.collect();
 	let slug = slug
 		.split('-')
@@ -227,15 +236,20 @@ fn run() -> Result<()> {
 	std::env::set_current_dir(&repo_root)?;
 
 	// 2. Read the full history once.
-	step(1, &format!("Reading commits from {}...", repo_root.display()));
-	let num_commits = git.get_commit_count()?;
-	let mut pb = ProgressBar::new(num_commits);
+	step(
+		1,
+		&format!("Reading commits from {}...", repo_root.display()),
+	);
+	let pb = ProgressBar::new(git.get_commit_count()?).with_style(
+		ProgressStyle::with_template("\t[{bar:40}] {pos}/{len} commits ({eta} left)")?
+			.progress_chars("=> "),
+	);
 	let rev = git.get_current_revision()?;
 	let mut analysis = Analysis::new(&rev);
-	git.analyse(&mut analysis, &mut pb)?;
-	pb.finish_println("");
+	git.analyse(&mut analysis, &pb)?;
+	pb.finish_and_clear();
 
-	let (first, last) = analysis.date_bounds().ok_or(UserError::EmptyRepo {})?;
+	let (first, last) = analysis.date_bounds().ok_or(UserError::EmptyRepo)?;
 	println!(
 		"\tFound {} commits from {} to {}.",
 		analysis.commits.len(),
@@ -312,8 +326,17 @@ fn run() -> Result<()> {
 		return Ok(());
 	}
 	step(4, "Rendering SVGs...");
-	render(&args, aliases.as_deref(), file_groups.as_deref(), &json_path, &out_dir)?;
-	println!("\nDone. Open {} to see them all.", out_dir.join("index.html").display());
+	render(
+		&args,
+		aliases.as_deref(),
+		file_groups.as_deref(),
+		&json_path,
+		&out_dir,
+	)?;
+	println!(
+		"\nDone. Open {} to see them all.",
+		out_dir.join("index.html").display()
+	);
 	Ok(())
 }
 
@@ -322,27 +345,32 @@ fn run() -> Result<()> {
 fn add_languages(analysis: &mut Analysis) {
 	let language_index = get_language_index();
 	let mut languages: HashMap<usize, usize> = HashMap::new();
-	let mut total_bytes: u64 = 0;
-	for path_str in &analysis.files {
-		let path = Path::new(&path_str);
-		if let Ok(metadata) = std::fs::metadata(path) {
-			let len = metadata.len();
-			total_bytes += len;
-			if let Some(ext) = path.extension() {
-				let ext_str = ext.to_string_lossy().into_owned();
-				if let Some(i) = language_index.get::<str>(&ext_str) {
-					*languages.entry(*i).or_insert(0) += len as usize;
-				}
-			}
+	let mut total_bytes = 0;
+	for path in analysis.files.iter().map(Path::new) {
+		let Ok(metadata) = std::fs::metadata(path) else {
+			continue;
+		};
+		let len = metadata.len() as usize;
+		total_bytes += len;
+		if let Some(&i) = path
+			.extension()
+			.and_then(|ext| ext.to_str())
+			.and_then(|ext| language_index.get(ext))
+		{
+			*languages.entry(i).or_default() += len;
 		}
 	}
-	analysis.total_bytes = total_bytes as usize;
-	for (language_index, bytes) in languages {
-		analysis.languages.push(Language {
-			name: LANG_NAMES[language_index].to_string(),
+	analysis.total_bytes = total_bytes;
+	// Largest first, like the Python analyser, so the output doesn't depend on hash order.
+	let mut languages: Vec<_> = languages.into_iter().collect();
+	languages.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+	analysis.languages = languages
+		.into_iter()
+		.map(|(i, bytes)| Language {
+			name: LANG_NAMES[i].to_string(),
 			bytes,
-		});
-	}
+		})
+		.collect();
 }
 
 /// Finds the directory containing the `commitscape` Python package:
@@ -355,10 +383,10 @@ fn renderer_home() -> Option<PathBuf> {
 			return Some(p);
 		}
 	}
-	if let Ok(exe) = std::env::current_exe() {
-		if let Some(found) = exe.ancestors().skip(1).find(|p| has_pkg(p)) {
-			return Some(found.to_path_buf());
-		}
+	if let Ok(exe) = std::env::current_exe()
+		&& let Some(found) = exe.ancestors().skip(1).find(|p| has_pkg(p))
+	{
+		return Some(found.to_path_buf());
 	}
 	let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	if has_pkg(&src) {
@@ -407,9 +435,9 @@ fn render(
 }
 
 fn main() {
-	let mut log_builder = env_logger::Builder::from_default_env();
-	log_builder.target(env_logger::Target::Stderr);
-	log_builder.init();
+	env_logger::Builder::from_default_env()
+		.target(env_logger::Target::Stderr)
+		.init();
 
 	if let Err(e) = run() {
 		if let Some(ue) = e.downcast_ref::<UserError>() {

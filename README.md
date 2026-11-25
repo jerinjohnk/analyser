@@ -11,7 +11,7 @@ interface is served from your own machine and only listens on `127.0.0.1`.
 |---|---|---|---|
 | `git` | reading the repository | `git --version` | `xcode-select --install` / `sudo apt install git` |
 | Python 3.9+ | the web interface and the SVGs (standard library only, no `pip install`) | `python3 --version` | `brew install python` / `sudo apt install python3` |
-| Rust (optional) | the faster native terminal version | `cargo --version` | `brew install rust` / [rustup.rs](https://rustup.rs) |
+| Rust 1.88+ (optional) | the faster native terminal version | `cargo --version` | `brew install rust` / [rustup.rs](https://rustup.rs) |
 
 ## Quick start
 
